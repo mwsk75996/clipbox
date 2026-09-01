@@ -1,0 +1,19 @@
+[package]
+name = "clipbox"
+version = "0.1.0"
+description = "A minimal desktop clipboard companion"
+authors = ["Clipbox contributors"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+name = "clipbox_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+clipbox-core = { path = "../crates/clipbox-core" }
+tauri = { version = "2", features = [] }

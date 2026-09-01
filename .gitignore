@@ -1,0 +1,16 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Rust and Tauri
+target/
+src-tauri/gen/
+
+# Environment and local tooling
+.env
+.env.*
+!.env.example
+AGENTS.md
+.DS_Store
