@@ -3,6 +3,7 @@
 use tauri::Manager;
 
 mod clipboard;
+mod source;
 
 /// Run the Clipbox desktop application.
 pub fn run() {

@@ -5,6 +5,8 @@ use std::time::Duration;
 use arboard::Clipboard;
 use clipbox_core::ClipboardStore;
 
+use crate::source;
+
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Start the background clipboard monitor.
@@ -44,7 +46,8 @@ fn monitor(database_path: PathBuf) {
                     .is_some_and(|previous| previous != &text);
 
                 if is_new_text && !text.is_empty() {
-                    match store.add_text(&text) {
+                    let metadata = source::current();
+                    match store.add_entry(&text, &metadata) {
                         Ok(id) => eprintln!("stored clipboard entry {id}"),
                         Err(error) => eprintln!("could not store clipboard text: {error}"),
                     }

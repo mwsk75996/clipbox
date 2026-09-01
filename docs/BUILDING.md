@@ -53,5 +53,5 @@ On Windows, if Python is installed, print the stored entries with:
 
 ```powershell
 $db = Join-Path $env:APPDATA 'com.palethea.clipbox\clipbox.sqlite3'
-python -c 'import sqlite3,sys; print(*sqlite3.connect(sys.argv[1]).execute("SELECT id, datetime(copied_at, ''unixepoch'', ''localtime''), content FROM clipboard_entries ORDER BY id DESC").fetchall(), sep="\n")' $db
+python -c 'import sqlite3,sys; print(*sqlite3.connect(sys.argv[1]).execute("SELECT id, datetime(copied_at, ''unixepoch'', ''localtime''), source_app, source_process, window_title, content FROM clipboard_entries ORDER BY id DESC").fetchall(), sep="\n")' $db
 ```
