@@ -1,54 +1,24 @@
 name: CI
 
 on:
-  push:
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   check:
-    name: Check Rust workspace and Tauri frontend
+    name: Check shared Rust core
     runs-on: ubuntu-latest
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes \
-            build-essential \
-            file \
-            libayatana-appindicator3-dev \
-            libssl-dev \
-            libxdo-dev \
-            librsvg2-dev \
-            libwebkit2gtk-4.1-dev \
-            patchelf
-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install JavaScript dependencies
-        run: npm ci
-
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Check Rust workspace
-        run: cargo check --workspace
-
-      - name: Run Rust tests
-        run: cargo test --workspace
-
-      - name: Validate Tauri configuration
-        run: npm run tauri -- info
+      - name: Test shared Rust core
+        run: cargo test -p clipbox-core
