@@ -28,6 +28,9 @@ pub struct ClipboardEntry {
     pub window_title: Option<String>,
     pub app_icon: Option<String>,
     pub is_pinned: bool,
+    pub entry_type: String,
+    pub image_data: Option<String>,
+    pub image_dimensions: Option<String>,
 }
 
 /// SQLite-backed storage shared by Clipbox frontends.
@@ -51,7 +54,10 @@ impl ClipboardStore {
                 source_process TEXT,
                 window_title TEXT,
                 app_icon TEXT,
-                is_pinned INTEGER NOT NULL DEFAULT 0
+                is_pinned INTEGER NOT NULL DEFAULT 0,
+                entry_type TEXT NOT NULL DEFAULT 'text',
+                image_data TEXT,
+                image_dimensions TEXT
             );
             CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
@@ -66,6 +72,9 @@ impl ClipboardStore {
             ("window_title", "window_title TEXT"),
             ("app_icon", "app_icon TEXT"),
             ("is_pinned", "is_pinned INTEGER NOT NULL DEFAULT 0"),
+            ("entry_type", "entry_type TEXT NOT NULL DEFAULT 'text'"),
+            ("image_data", "image_data TEXT"),
+            ("image_dimensions", "image_dimensions TEXT"),
         ] {
             if !Self::has_column(&connection, column)? {
                 connection.execute(
@@ -144,6 +153,53 @@ impl ClipboardStore {
     }
 
     // ----------
+    // Add Image Clipboard Entry
+    // Description: Stores a captured image clipboard item with thumbnail data URL, dimensions, and source metadata.
+    // ----------
+    pub fn add_image_entry(
+        &self,
+        image_data: &str,
+        dimensions: &str,
+        metadata: &ClipboardMetadata,
+    ) -> Result<i64> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let content_label = format!("Image ({dimensions})");
+
+        self.connection.execute(
+            "INSERT INTO clipboard_entries (
+                content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 'image', ?7, ?8)",
+            params![
+                content_label,
+                now,
+                metadata.source_app.as_deref(),
+                metadata.source_process.as_deref(),
+                metadata.window_title.as_deref(),
+                metadata.app_icon.as_deref(),
+                image_data,
+                dimensions,
+            ],
+        )?;
+
+        let last_id = self.connection.last_insert_rowid();
+
+        // Enforce retention limit if configured
+        if let Ok(Some(limit_str)) = self.get_setting("retention_limit") {
+            if let Ok(limit) = limit_str.parse::<usize>() {
+                if limit > 0 {
+                    let _ = self.prune_entries(limit);
+                }
+            }
+        }
+
+        Ok(last_id)
+    }
+
+    // ----------
     // Retention Limit Pruning
     // Description: Deletes surplus records exceeding the configured history retention limit, keeping only the newest unpinned entries. Pinned entries are preserved.
     // ----------
@@ -169,7 +225,7 @@ impl ClipboardStore {
     /// Return the newest stored entries first, prioritizing pinned entries.
     pub fn recent_entries(&self, limit: u32) -> Result<Vec<ClipboardEntry>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned
+            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions
              FROM clipboard_entries
              ORDER BY is_pinned DESC, id DESC
              LIMIT ?1",
@@ -185,6 +241,9 @@ impl ClipboardStore {
                 window_title: row.get(5)?,
                 app_icon: row.get(6)?,
                 is_pinned: is_pinned_int != 0,
+                entry_type: row.get(8).unwrap_or_else(|_| "text".into()),
+                image_data: row.get(9)?,
+                image_dimensions: row.get(10)?,
             })
         })?;
 
@@ -308,7 +367,7 @@ pub fn strip_leading_empty_lines(text: &str) -> &str {
 mod tests {
     use rusqlite::Connection;
 
-    use super::ClipboardStore;
+    use super::{ClipboardMetadata, ClipboardStore};
 
     #[test]
     fn creates_schema_and_stores_text() {
@@ -564,5 +623,27 @@ mod tests {
         // Entries 5 and 4 are the 2 newest unpinned entries
         assert_eq!(entries[1].content, "entry 5");
         assert_eq!(entries[2].content, "entry 4");
+    }
+
+    #[test]
+    fn stores_and_retrieves_image_entry() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        let metadata = ClipboardMetadata {
+            source_app: Some("SnippingTool".into()),
+            source_process: Some("SnippingTool.exe".into()),
+            window_title: Some("Snipping Tool".into()),
+            app_icon: None,
+        };
+
+        let fake_data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        let id = store.add_image_entry(fake_data_url, "800x600", &metadata).unwrap();
+        assert_eq!(id, 1);
+
+        let entries = store.recent_entries(10).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].entry_type, "image");
+        assert_eq!(entries[0].image_data.as_deref(), Some(fake_data_url));
+        assert_eq!(entries[0].image_dimensions.as_deref(), Some("800x600"));
+        assert_eq!(entries[0].source_app.as_deref(), Some("SnippingTool"));
     }
 }

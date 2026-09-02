@@ -16,6 +16,7 @@ import {
   ChevronUp,
   Trash2,
   Pin,
+  Image as ImageIcon,
 } from "lucide-react";
 import { startOfDay, endOfDay } from "date-fns";
 import type { DateRange } from "react-day-picker";
@@ -56,6 +57,9 @@ export interface ClipboardEntry {
   windowTitle?: string | null;
   appIcon?: string | null;
   isPinned?: boolean;
+  entryType?: string;
+  imageData?: string | null;
+  imageDimensions?: string | null;
 }
 
 const PREVIEW_ENTRIES: ClipboardEntry[] = [
@@ -118,6 +122,7 @@ export default function App() {
   const [entries, setEntries] = React.useState<ClipboardEntry[]>([]);
   const [searchQuery, setSearchQuery] = React.useState("");
   const [selectedApp, setSelectedApp] = React.useState<string>("all");
+  const [selectedType, setSelectedType] = React.useState<"all" | "text" | "image">("all");
   const [dateRange, setDateRange] = React.useState<DateRange | undefined>();
   const [expandedId, setExpandedId] = React.useState<number | null>(null);
   const [copiedId, setCopiedId] = React.useState<number | null>(null);
@@ -240,7 +245,7 @@ export default function App() {
     return Array.from(apps).sort();
   }, [entries]);
 
-  // Filtered entries by query, app, and min/max date range
+  // Filtered entries by query, app, content type, and min/max date range
   const filteredEntries = React.useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     const fromTime = dateRange?.from
@@ -263,6 +268,12 @@ export default function App() {
       const matchesApp =
         selectedApp === "all" || sourceLabel(entry) === selectedApp;
 
+      const matchesType =
+        selectedType === "all" ||
+        (selectedType === "image"
+          ? entry.entryType === "image"
+          : entry.entryType !== "image");
+
       let matchesDate = true;
       if (fromTime !== null) {
         if (toTime !== null) {
@@ -272,14 +283,14 @@ export default function App() {
         }
       }
 
-      return matchesSearch && matchesApp && matchesDate;
+      return matchesSearch && matchesApp && matchesDate && matchesType;
     }).sort((a, b) => {
       if (Boolean(a.isPinned) === Boolean(b.isPinned)) {
         return b.id - a.id;
       }
       return a.isPinned ? -1 : 1;
     });
-  }, [entries, searchQuery, selectedApp, dateRange]);
+  }, [entries, searchQuery, selectedApp, selectedType, dateRange]);
 
   // Toggle pinned status of an entry
   const handleTogglePin = async (id: number, event: React.MouseEvent) => {
@@ -299,15 +310,27 @@ export default function App() {
     }
   };
 
-  // Copy entry text to clipboard
+  // Copy entry text or image to clipboard
   const handleCopy = async (entry: ClipboardEntry, event?: React.MouseEvent) => {
     event?.stopPropagation();
     try {
-      const content = stripLeadingEmptyLines(entry.content);
-      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-        await invoke("copy_to_clipboard", { text: content });
+      if (entry.entryType === "image" && entry.imageData) {
+        if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+          await invoke("copy_image_to_clipboard", { dataUrl: entry.imageData });
+        } else {
+          const res = await fetch(entry.imageData);
+          const blob = await res.blob();
+          await navigator.clipboard.write([
+            new ClipboardItem({ [blob.type]: blob }),
+          ]);
+        }
       } else {
-        await navigator.clipboard.writeText(content);
+        const content = stripLeadingEmptyLines(entry.content);
+        if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+          await invoke("copy_to_clipboard", { text: content });
+        } else {
+          await navigator.clipboard.writeText(content);
+        }
       }
       setCopiedId(entry.id);
       setTimeout(() => setCopiedId(null), 1500);
@@ -338,6 +361,7 @@ export default function App() {
 
   const clearFilters = () => {
     setSelectedApp("all");
+    setSelectedType("all");
     setSearchQuery("");
     setDateRange(undefined);
     setIsFilterOpen(false);
@@ -367,7 +391,8 @@ export default function App() {
     setExpandedId((prev) => (prev === id ? null : id));
   };
 
-  const hasActiveFilters = selectedApp !== "all" || Boolean(dateRange?.from);
+  const hasActiveFilters =
+    selectedApp !== "all" || selectedType !== "all" || Boolean(dateRange?.from);
 
   return (
     <div className="h-screen w-screen bg-background text-foreground flex flex-col font-sans select-none overflow-hidden transition-colors duration-200">
@@ -399,13 +424,13 @@ export default function App() {
             <Popover open={isFilterOpen} onOpenChange={setIsFilterOpen}>
               <PopoverTrigger asChild>
                 <Button
-                  variant={selectedApp !== "all" ? "default" : "outline"}
+                  variant={selectedApp !== "all" || selectedType !== "all" ? "default" : "outline"}
                   size="sm"
                   className="gap-1.5 shrink-0 h-9"
                 >
                   <SlidersHorizontal className="size-4" />
                   Filters
-                  {selectedApp !== "all" && (
+                  {(selectedApp !== "all" || selectedType !== "all") && (
                     <span className="size-2 rounded-full bg-primary-foreground" />
                   )}
                 </Button>
@@ -413,11 +438,14 @@ export default function App() {
               <PopoverContent align="end" className="w-72 space-y-4">
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-sm">Filter History</span>
-                  {selectedApp !== "all" && (
+                  {(selectedApp !== "all" || selectedType !== "all") && (
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setSelectedApp("all")}
+                      onClick={() => {
+                        setSelectedApp("all");
+                        setSelectedType("all");
+                      }}
                       className="h-8 text-xs text-muted-foreground hover:text-foreground"
                     >
                       <RotateCcw className="size-3 mr-1" />
@@ -427,6 +455,27 @@ export default function App() {
                 </div>
 
                 <Separator />
+
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Content Type
+                  </label>
+                  <Select
+                    value={selectedType}
+                    onValueChange={(val) =>
+                      setSelectedType(val as "all" | "text" | "image")
+                    }
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="All types" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All types</SelectItem>
+                      <SelectItem value="text">Text only</SelectItem>
+                      <SelectItem value="image">Images only</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
 
                 <div className="space-y-2">
                   <label className="text-xs font-medium text-muted-foreground">
@@ -509,6 +558,12 @@ export default function App() {
                               Pinned
                             </span>
                           )}
+                          {entry.entryType === "image" && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 select-none">
+                              <ImageIcon className="size-2.5" />
+                              Image
+                            </span>
+                          )}
                           <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
                             {entry.appIcon ? (
                               <img
@@ -584,39 +639,60 @@ export default function App() {
                       </CardHeader>
 
                       <CardContent className="p-4 pt-1">
-                        <div
-                          onClick={(e) => {
-                            if (isExpanded) {
-                              e.stopPropagation();
-                            }
-                          }}
-                          className={`text-sm font-dmsans font-normal tracking-normal leading-relaxed whitespace-pre-wrap break-all select-text cursor-text ${
-                            !isExpanded && isMultiLine ? "line-clamp-1" : ""
-                          }`}
-                        >
-                          {isExpanded ? content : lines[0]}
-                        </div>
-
-                        {isMultiLine && (
-                          <div
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setExpandedId(isExpanded ? null : entry.id);
-                            }}
-                            className="flex items-center gap-1 mt-2 text-xs text-muted-foreground hover:text-foreground cursor-pointer select-none"
-                          >
-                            {isExpanded ? (
-                              <>
-                                <ChevronUp className="size-3" />
-                                <span>Collapse</span>
-                              </>
-                            ) : (
-                              <>
-                                <ChevronDown className="size-3" />
-                                <span>+{lines.length - 1} more lines</span>
-                              </>
+                        {entry.entryType === "image" && entry.imageData ? (
+                          <div>
+                            <div className="relative overflow-hidden rounded-md border bg-muted/20 max-h-[300px] flex items-center justify-center p-1.5">
+                              <img
+                                src={entry.imageData}
+                                alt={entry.content}
+                                className="max-h-[280px] w-auto max-w-full object-contain rounded select-none pointer-events-none"
+                                loading="lazy"
+                              />
+                            </div>
+                            {entry.imageDimensions && (
+                              <div className="flex items-center gap-1.5 mt-2 text-[11px] text-muted-foreground font-mono">
+                                <ImageIcon className="size-3" />
+                                <span>{entry.imageDimensions}</span>
+                              </div>
                             )}
                           </div>
+                        ) : (
+                          <>
+                            <div
+                              onClick={(e) => {
+                                if (isExpanded) {
+                                  e.stopPropagation();
+                                }
+                              }}
+                              className={`text-sm font-dmsans font-normal tracking-normal leading-relaxed whitespace-pre-wrap break-all select-text cursor-text ${
+                                !isExpanded && isMultiLine ? "line-clamp-1" : ""
+                              }`}
+                            >
+                              {isExpanded ? content : lines[0]}
+                            </div>
+
+                            {isMultiLine && (
+                              <div
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedId(isExpanded ? null : entry.id);
+                                }}
+                                className="flex items-center gap-1 mt-2 text-xs text-muted-foreground hover:text-foreground cursor-pointer select-none"
+                              >
+                                {isExpanded ? (
+                                  <>
+                                    <ChevronUp className="size-3" />
+                                    <span>Collapse</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <ChevronDown className="size-3" />
+                                    <span>+{lines.length - 1} more lines</span>
+                                  </>
+                                )}
+                              </div>
+                            )}
+                          </>
                         )}
                       </CardContent>
                     </Card>

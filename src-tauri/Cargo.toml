@@ -14,9 +14,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+arboard = { version = "3", default-features = false, features = ["wayland-data-control", "image-data"] }
 base64 = "0.22"
 clipbox-core = { path = "../crates/clipbox-core" }
+image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = ["tray-icon"] }
 
