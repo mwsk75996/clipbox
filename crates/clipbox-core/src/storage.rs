@@ -50,6 +50,10 @@ impl ClipboardStore {
                 source_process TEXT,
                 window_title TEXT,
                 app_icon TEXT
+            );
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             );",
         )?;
 
@@ -155,6 +159,31 @@ impl ClipboardStore {
     /// Delete all stored clipboard records and return the number of deleted rows.
     pub fn clear_entries(&self) -> Result<usize> {
         self.connection.execute("DELETE FROM clipboard_entries", [])
+    }
+
+    // ----------
+    // App Settings Storage
+    // Description: Key-value persistence for user preferences such as start minimized, always on top, and retention policy.
+    // ----------
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let mut statement = self.connection.prepare(
+            "SELECT value FROM app_settings WHERE key = ?1",
+        )?;
+        let mut rows = statement.query([key])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.connection.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [key, value],
+        )?;
+        Ok(())
     }
 }
 
@@ -297,5 +326,23 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].content, "Hello world\nSecond line");
+    }
+
+    #[test]
+    fn stores_and_retrieves_app_settings() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        assert_eq!(store.get_setting("start_minimized").unwrap(), None);
+
+        store.set_setting("start_minimized", "true").unwrap();
+        assert_eq!(
+            store.get_setting("start_minimized").unwrap(),
+            Some("true".into())
+        );
+
+        store.set_setting("start_minimized", "false").unwrap();
+        assert_eq!(
+            store.get_setting("start_minimized").unwrap(),
+            Some("false".into())
+        );
     }
 }
