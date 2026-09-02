@@ -196,14 +196,33 @@ impl ClipboardStore {
 
     // ----------
     // Delete Single Entry
-    // Description: Deletes an individual clipboard history entry by its primary key id.
+    // Description: Deletes an individual clipboard history entry by its primary key id and re-sequences higher IDs to maintain contiguous history numbering.
     // ----------
-    /// Delete a single clipboard record by id. Returns true if a record was deleted.
+    /// Delete a single clipboard record by id. Re-sequences higher IDs so numbers remain contiguous.
     pub fn delete_entry(&self, id: i64) -> Result<bool> {
         let deleted = self.connection.execute(
             "DELETE FROM clipboard_entries WHERE id = ?1",
             params![id],
         )?;
+
+        if deleted > 0 {
+            // Re-sequence IDs greater than the deleted id so numbers remain contiguous.
+            // Use negative temporary values to avoid any unique constraint conflicts.
+            self.connection.execute(
+                "UPDATE clipboard_entries SET id = -id WHERE id > ?1",
+                params![id],
+            )?;
+            self.connection.execute(
+                "UPDATE clipboard_entries SET id = -id - 1 WHERE id < 0",
+                [],
+            )?;
+            // Keep sqlite_sequence in sync so next autoincrement ID matches
+            let _ = self.connection.execute(
+                "UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id), 0) FROM clipboard_entries) WHERE name = 'clipboard_entries'",
+                [],
+            );
+        }
+
         Ok(deleted > 0)
     }
 
@@ -428,19 +447,27 @@ mod tests {
     #[test]
     fn deletes_a_single_entry_by_id() {
         let store = ClipboardStore::in_memory().expect("in-memory database should open");
-        let id1 = store.add_text("first").unwrap();
-        let id2 = store.add_text("second").unwrap();
+        let _id1 = store.add_text("first").unwrap(); // 1
+        let id2 = store.add_text("second").unwrap(); // 2
+        let _id3 = store.add_text("third").unwrap(); // 3
 
-        assert_eq!(store.recent_entries(10).unwrap().len(), 2);
+        assert_eq!(store.recent_entries(10).unwrap().len(), 3);
 
-        let deleted = store.delete_entry(id1).unwrap();
+        // Delete id2 ("second") in the middle
+        let deleted = store.delete_entry(id2).unwrap();
         assert!(deleted);
 
         let entries = store.recent_entries(10).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].id, id2);
+        assert_eq!(entries.len(), 2);
+        // "third" originally had id 3, now re-sequenced to id 2
+        assert_eq!(entries[0].content, "third");
+        assert_eq!(entries[0].id, 2);
+        // "first" originally had id 1, remains id 1
+        assert_eq!(entries[1].content, "first");
+        assert_eq!(entries[1].id, 1);
 
-        let deleted_again = store.delete_entry(id1).unwrap();
-        assert!(!deleted_again);
+        // Subsequent additions get next sequential id (3)
+        let id_new = store.add_text("fourth").unwrap();
+        assert_eq!(id_new, 3);
     }
 }

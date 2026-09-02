@@ -291,10 +291,16 @@ export default function App() {
     }
   };
 
-  // Delete single entry from history
+  // Delete single entry from history and re-sequence remaining higher IDs
   const handleDelete = async (id: number, event: React.MouseEvent) => {
     event.stopPropagation();
-    setEntries((prev) => prev.filter((entry) => entry.id !== id));
+    setEntries((prev) =>
+      prev
+        .filter((entry) => entry.id !== id)
+        .map((entry) =>
+          entry.id > id ? { ...entry, id: entry.id - 1 } : entry
+        )
+    );
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
         await invoke("delete_entry", { id });
