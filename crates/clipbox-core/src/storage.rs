@@ -27,6 +27,7 @@ pub struct ClipboardEntry {
     pub source_process: Option<String>,
     pub window_title: Option<String>,
     pub app_icon: Option<String>,
+    pub is_pinned: bool,
 }
 
 /// SQLite-backed storage shared by Clipbox frontends.
@@ -49,7 +50,8 @@ impl ClipboardStore {
                 source_app TEXT,
                 source_process TEXT,
                 window_title TEXT,
-                app_icon TEXT
+                app_icon TEXT,
+                is_pinned INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
@@ -63,6 +65,7 @@ impl ClipboardStore {
             ("source_process", "source_process TEXT"),
             ("window_title", "window_title TEXT"),
             ("app_icon", "app_icon TEXT"),
+            ("is_pinned", "is_pinned INTEGER NOT NULL DEFAULT 0"),
         ] {
             if !Self::has_column(&connection, column)? {
                 connection.execute(
@@ -142,9 +145,10 @@ impl ClipboardStore {
 
     // ----------
     // Retention Limit Pruning
-    // Description: Deletes surplus records exceeding the configured history retention limit, keeping only the newest entries.
+    // Description: Deletes surplus records exceeding the configured history retention limit, keeping only the newest unpinned entries. Pinned entries are preserved.
     // ----------
-    /// Retain only the most recent `limit` records, deleting older ones.
+    /// Retain only the most recent `limit` unpinned records, deleting older ones.
+    /// Pinned entries are exempt from retention pruning.
     /// If `limit == 0`, no records are deleted (unlimited retention).
     pub fn prune_entries(&self, limit: usize) -> Result<usize> {
         if limit == 0 {
@@ -153,8 +157,8 @@ impl ClipboardStore {
 
         let deleted = self.connection.execute(
             "DELETE FROM clipboard_entries
-             WHERE id NOT IN (
-                 SELECT id FROM clipboard_entries ORDER BY id DESC LIMIT ?1
+             WHERE is_pinned = 0 AND id NOT IN (
+                 SELECT id FROM clipboard_entries WHERE is_pinned = 0 ORDER BY id DESC LIMIT ?1
              )",
             params![limit as i64],
         )?;
@@ -162,15 +166,16 @@ impl ClipboardStore {
         Ok(deleted)
     }
 
-    /// Return the newest stored entries first.
+    /// Return the newest stored entries first, prioritizing pinned entries.
     pub fn recent_entries(&self, limit: u32) -> Result<Vec<ClipboardEntry>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon
+            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned
              FROM clipboard_entries
-             ORDER BY id DESC
+             ORDER BY is_pinned DESC, id DESC
              LIMIT ?1",
         )?;
         let entries = statement.query_map(params![i64::from(limit)], |row| {
+            let is_pinned_int: i32 = row.get(7)?;
             Ok(ClipboardEntry {
                 id: row.get(0)?,
                 content: row.get(1)?,
@@ -179,10 +184,40 @@ impl ClipboardStore {
                 source_process: row.get(4)?,
                 window_title: row.get(5)?,
                 app_icon: row.get(6)?,
+                is_pinned: is_pinned_int != 0,
             })
         })?;
 
         entries.collect()
+    }
+
+    // ----------
+    // Pin Clipboard Entry
+    // Description: Toggles or sets the is_pinned state of a clipboard entry by ID, anchoring it to the top of the feed.
+    // ----------
+    /// Set the pinned status of an entry by ID.
+    pub fn set_pinned(&self, id: i64, pinned: bool) -> Result<bool> {
+        let updated = self.connection.execute(
+            "UPDATE clipboard_entries SET is_pinned = ?1 WHERE id = ?2",
+            params![pinned as i32, id],
+        )?;
+        Ok(updated > 0)
+    }
+
+    /// Toggle the pinned status of an entry by ID and return the new status.
+    pub fn toggle_pinned(&self, id: i64) -> Result<bool> {
+        let mut statement = self.connection.prepare(
+            "SELECT is_pinned FROM clipboard_entries WHERE id = ?1",
+        )?;
+        let mut rows = statement.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            let is_pinned_int: i32 = row.get(0)?;
+            let new_pinned = is_pinned_int == 0;
+            self.set_pinned(id, new_pinned)?;
+            Ok(new_pinned)
+        } else {
+            Ok(false)
+        }
     }
 
     // ----------
@@ -469,5 +504,65 @@ mod tests {
         // Subsequent additions get next sequential id (3)
         let id_new = store.add_text("fourth").unwrap();
         assert_eq!(id_new, 3);
+    }
+
+    #[test]
+    fn pins_and_unpins_entries_sorting_pinned_to_top() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        let id1 = store.add_text("first").unwrap();
+        let id2 = store.add_text("second").unwrap();
+        let id3 = store.add_text("third").unwrap();
+
+        // Default order: newest first
+        let entries = store.recent_entries(10).unwrap();
+        assert_eq!(entries[0].id, id3);
+        assert_eq!(entries[1].id, id2);
+        assert_eq!(entries[2].id, id1);
+        assert!(!entries[2].is_pinned);
+
+        // Pin the oldest entry (id1)
+        let new_state = store.toggle_pinned(id1).unwrap();
+        assert!(new_state);
+
+        let entries = store.recent_entries(10).unwrap();
+        assert_eq!(entries[0].id, id1);
+        assert!(entries[0].is_pinned);
+        assert_eq!(entries[1].id, id3);
+        assert_eq!(entries[2].id, id2);
+
+        // Unpin entry (id1)
+        let new_state = store.toggle_pinned(id1).unwrap();
+        assert!(!new_state);
+
+        let entries = store.recent_entries(10).unwrap();
+        assert_eq!(entries[0].id, id3);
+        assert_eq!(entries[1].id, id2);
+        assert_eq!(entries[2].id, id1);
+    }
+
+    #[test]
+    fn pinned_entries_survive_retention_pruning() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        let id1 = store.add_text("entry 1").unwrap();
+        let _id2 = store.add_text("entry 2").unwrap();
+        let _id3 = store.add_text("entry 3").unwrap();
+        let _id4 = store.add_text("entry 4").unwrap();
+        let _id5 = store.add_text("entry 5").unwrap();
+
+        // Pin entry 1
+        store.set_pinned(id1, true).unwrap();
+
+        // Prune to limit 2 (unpinned limit)
+        let pruned = store.prune_entries(2).unwrap();
+        assert_eq!(pruned, 2); // entries 2 and 3 pruned
+
+        let entries = store.recent_entries(10).unwrap();
+        assert_eq!(entries.len(), 3);
+        // Entry 1 is pinned and at top
+        assert_eq!(entries[0].id, id1);
+        assert!(entries[0].is_pinned);
+        // Entries 5 and 4 are the 2 newest unpinned entries
+        assert_eq!(entries[1].content, "entry 5");
+        assert_eq!(entries[2].content, "entry 4");
     }
 }

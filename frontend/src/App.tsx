@@ -15,6 +15,7 @@ import {
   ChevronDown,
   ChevronUp,
   Trash2,
+  Pin,
 } from "lucide-react";
 import { startOfDay, endOfDay } from "date-fns";
 import type { DateRange } from "react-day-picker";
@@ -54,6 +55,7 @@ export interface ClipboardEntry {
   sourceProcess?: string | null;
   windowTitle?: string | null;
   appIcon?: string | null;
+  isPinned?: boolean;
 }
 
 const PREVIEW_ENTRIES: ClipboardEntry[] = [
@@ -271,8 +273,31 @@ export default function App() {
       }
 
       return matchesSearch && matchesApp && matchesDate;
+    }).sort((a, b) => {
+      if (Boolean(a.isPinned) === Boolean(b.isPinned)) {
+        return b.id - a.id;
+      }
+      return a.isPinned ? -1 : 1;
     });
   }, [entries, searchQuery, selectedApp, dateRange]);
+
+  // Toggle pinned status of an entry
+  const handleTogglePin = async (id: number, event: React.MouseEvent) => {
+    event.stopPropagation();
+    setEntries((prev) =>
+      prev.map((entry) =>
+        entry.id === id ? { ...entry, isPinned: !entry.isPinned } : entry
+      )
+    );
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("toggle_pinned", { id });
+      }
+    } catch (err) {
+      console.error("Failed to toggle pin", err);
+      fetchEntries();
+    }
+  };
 
   // Copy entry text to clipboard
   const handleCopy = async (entry: ClipboardEntry, event?: React.MouseEvent) => {
@@ -471,11 +496,19 @@ export default function App() {
                         handleCardClick(entry.id, isMultiLine, e)
                       }
                       className={`transition-all border hover:border-primary/40 cursor-pointer shadow-sm ${
-                        isExpanded ? "ring-1 ring-primary/20" : ""
-                      }`}
+                        entry.isPinned
+                          ? "border-primary/40 bg-primary/[0.03] dark:bg-primary/[0.05] ring-1 ring-primary/20"
+                          : ""
+                      } ${isExpanded ? "ring-1 ring-primary/30" : ""}`}
                     >
                       <CardHeader className="p-4 pb-2 flex flex-row items-center justify-between space-y-0">
                         <div className="flex items-center gap-2 flex-wrap">
+                          {entry.isPinned && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-primary/10 text-primary border border-primary/20 select-none">
+                              <Pin className="size-2.5 fill-primary" />
+                              Pinned
+                            </span>
+                          )}
                           <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
                             {entry.appIcon ? (
                               <img
@@ -512,6 +545,19 @@ export default function App() {
                           <span className="text-[11px] font-mono text-muted-foreground mr-1">
                             #{entry.id}
                           </span>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className={`size-7 transition-colors ${
+                              entry.isPinned
+                                ? "text-primary hover:text-primary/80 bg-primary/10 hover:bg-primary/20"
+                                : "text-muted-foreground hover:text-foreground"
+                            }`}
+                            title={entry.isPinned ? "Unpin from top" : "Pin to top"}
+                            onClick={(e) => handleTogglePin(entry.id, e)}
+                          >
+                            <Pin className={`size-3.5 ${entry.isPinned ? "fill-primary" : ""}`} />
+                          </Button>
                           <Button
                             variant="ghost"
                             size="icon"

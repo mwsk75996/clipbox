@@ -24,6 +24,7 @@ pub struct ClipboardEntry {
     pub source_process: Option<String>,
     pub window_title: Option<String>,
     pub app_icon: Option<String>,
+    pub is_pinned: bool,
 }
 
 impl From<CoreClipboardEntry> for ClipboardEntry {
@@ -36,6 +37,7 @@ impl From<CoreClipboardEntry> for ClipboardEntry {
             source_process: entry.source_process,
             window_title: entry.window_title,
             app_icon: entry.app_icon,
+            is_pinned: entry.is_pinned,
         }
     }
 }
@@ -79,6 +81,21 @@ fn delete_entry(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, Stri
     store
         .delete_entry(id)
         .map_err(|error| format!("could not delete Clipbox entry: {error}"))
+}
+
+// ----------
+// Pin Entry Command
+// Description: IPC command allowing the frontend to toggle the pinned status of a clipboard entry.
+// ----------
+
+#[tauri::command]
+fn toggle_pinned(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+    store
+        .toggle_pinned(id)
+        .map_err(|error| format!("could not toggle pin status: {error}"))
 }
 
 // ----------
@@ -354,6 +371,7 @@ pub fn run() {
             list_entries,
             clear_entries,
             delete_entry,
+            toggle_pinned,
             minimize_window,
             toggle_maximize_window,
             close_window,

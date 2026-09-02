@@ -76,6 +76,7 @@ fn monitor(database_path: PathBuf, app: tauri::AppHandle) {
                                     source_process: metadata.source_process,
                                     window_title: metadata.window_title,
                                     app_icon: metadata.app_icon,
+                                    is_pinned: false,
                                 };
                                 let _ = app.emit("clipboard://new-entry", entry);
                             }
