@@ -1,3 +1,8 @@
+// ----------
+// Clipboard Monitoring Service
+// Description: Background polling service monitoring the OS clipboard for text changes while gracefully handling empty clipboards and non-text formats without console spam.
+// ----------
+
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
@@ -46,8 +51,9 @@ fn monitor(database_path: PathBuf) {
                     .is_some_and(|previous| previous != &text);
 
                 if is_new_text && !text.is_empty() {
+                    let cleaned = clipbox_core::strip_leading_empty_lines(&text);
                     let metadata = source::current();
-                    match store.add_entry(&text, &metadata) {
+                    match store.add_entry(cleaned, &metadata) {
                         Ok(id) => eprintln!("stored clipboard entry {id}"),
                         Err(error) => eprintln!("could not store clipboard text: {error}"),
                     }
@@ -55,7 +61,14 @@ fn monitor(database_path: PathBuf) {
 
                 previous_text = Some(text);
             }
-            Err(error) => eprintln!("could not read the system clipboard: {error}"),
+            Err(arboard::Error::ContentNotAvailable) => {
+                // Normal clipboard state when empty or holding non-text formats (images, files, etc.).
+                // Silently ignore to eliminate terminal log spam.
+            }
+            Err(_transient_error) => {
+                // Transient OS errors (e.g. another application briefly locking the clipboard during copy).
+                // Silently retry on next poll interval.
+            }
         }
 
         thread::sleep(POLL_INTERVAL);
