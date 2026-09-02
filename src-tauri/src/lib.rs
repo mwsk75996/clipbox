@@ -99,6 +99,25 @@ fn is_window_maximized(window: tauri::Window) -> Result<bool, String> {
     window.is_maximized().map_err(|error| error.to_string())
 }
 
+// ----------
+// Always on Top Window Commands
+// Description: IPC commands to dynamically pin/unpin the Clipbox window above other applications and query the current pinning state.
+// ----------
+
+#[tauri::command]
+fn set_always_on_top(window: tauri::Window, always_on_top: bool) -> Result<(), String> {
+    window
+        .set_always_on_top(always_on_top)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn is_always_on_top(window: tauri::Window) -> Result<bool, String> {
+    window
+        .is_always_on_top()
+        .map_err(|error| error.to_string())
+}
+
 /// Run the Clipbox desktop application.
 pub fn run() {
     tauri::Builder::default()
@@ -121,7 +140,9 @@ pub fn run() {
             toggle_maximize_window,
             close_window,
             start_dragging,
-            is_window_maximized
+            is_window_maximized,
+            set_always_on_top,
+            is_always_on_top
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clipbox");

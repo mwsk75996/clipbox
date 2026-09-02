@@ -160,6 +160,18 @@ export default function App() {
     };
   }, []);
 
+  // Restore Always on Top preference on startup
+  React.useEffect(() => {
+    const saved = localStorage.getItem("clipbox:alwaysOnTop");
+    if (saved === "true") {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        invoke("set_always_on_top", { alwaysOnTop: true }).catch((err) =>
+          console.warn("Could not restore always on top setting", err)
+        );
+      }
+    }
+  }, []);
+
   // Poll clipboard entries from Tauri IPC
   const fetchEntries = React.useCallback(async () => {
     try {
