@@ -175,6 +175,70 @@ fn set_start_minimized(state: tauri::State<'_, AppState>, enabled: bool) -> Resu
 }
 
 // ----------
+// Database Path & Explorer Reveal Commands
+// Description: Returns the dynamic resolved filesystem path of the active SQLite database and opens it directly in Windows File Explorer.
+// ----------
+
+#[tauri::command]
+fn get_database_path(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    Ok(state.database_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn open_database_directory(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer")
+            .arg(format!("/select,\"{}\"", state.database_path.display()))
+            .spawn()
+            .map_err(|e| format!("could not open explorer: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(parent) = state.database_path.parent() {
+            let _ = std::process::Command::new("xdg-open").arg(parent).spawn();
+        }
+        Ok(())
+    }
+}
+
+// ----------
+// Retention Limit Setting Commands
+// Description: Queries and updates the history retention limit, immediately pruning existing surplus records if a smaller limit is selected.
+// ----------
+
+#[tauri::command]
+fn get_retention_limit(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    Ok(store
+        .get_setting("retention_limit")
+        .unwrap_or_default()
+        .unwrap_or_else(|| "500".into()))
+}
+
+#[tauri::command]
+fn set_retention_limit(state: tauri::State<'_, AppState>, limit: String) -> Result<usize, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+    store
+        .set_setting("retention_limit", &limit)
+        .map_err(|error| format!("could not save retention limit setting: {error}"))?;
+
+    let pruned = if limit == "unlimited" {
+        0
+    } else if let Ok(parsed) = limit.parse::<usize>() {
+        store.prune_entries(parsed).unwrap_or(0)
+    } else {
+        0
+    };
+
+    Ok(pruned)
+}
+
+// ----------
 // Native Clipboard Copy Command
 // Description: Writes text to the OS clipboard directly using arboard, ensuring copy actions from Clipbox cards succeed without browser focus limitations.
 // ----------
@@ -288,7 +352,11 @@ pub fn run() {
             is_autostart_enabled,
             set_autostart,
             is_start_minimized,
-            set_start_minimized
+            set_start_minimized,
+            get_database_path,
+            open_database_directory,
+            get_retention_limit,
+            set_retention_limit
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clipbox");
