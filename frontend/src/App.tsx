@@ -134,6 +134,16 @@ export default function App() {
         return;
       }
 
+      // Escape key hides window to system tray if no modal dialog is open
+      if (event.key === "Escape") {
+        const hasOpenDialog = document.querySelector('[role="dialog"]');
+        if (!hasOpenDialog) {
+          if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+            invoke("hide_window").catch(console.error);
+          }
+        }
+      }
+
       // Block browser default shortcuts (find, refresh, print, view source, devtools, history, etc.)
       if (
         event.key === "F5" ||

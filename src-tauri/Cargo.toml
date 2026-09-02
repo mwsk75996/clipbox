@@ -18,7 +18,7 @@ arboard = { version = "3", default-features = false, features = ["wayland-data-c
 base64 = "0.22"
 clipbox-core = { path = "../crates/clipbox-core" }
 serde = { version = "1", features = ["derive"] }
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [

@@ -87,7 +87,25 @@ fn toggle_maximize_window(window: tauri::Window) -> Result<(), String> {
 
 #[tauri::command]
 fn close_window(window: tauri::Window) -> Result<(), String> {
-    window.close().map_err(|error| error.to_string())
+    // Hide to system tray instead of terminating the app
+    window.hide().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn hide_window(window: tauri::Window) -> Result<(), String> {
+    window.hide().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn show_window(window: tauri::Window) -> Result<(), String> {
+    window.show().map_err(|error| error.to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn exit_app(app: tauri::AppHandle) {
+    app.exit(0);
 }
 
 #[tauri::command]
@@ -134,6 +152,28 @@ fn set_autostart(enabled: bool) -> Result<(), String> {
     autostart::set_autostart(enabled)
 }
 
+// ----------
+// Start Minimized Setting Commands
+// Description: Commands allowing the frontend to query and configure whether Clipbox starts minimized to the system tray.
+// ----------
+
+#[tauri::command]
+fn is_start_minimized(state: tauri::State<'_, AppState>) -> Result<bool, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    Ok(store.get_setting("start_minimized").unwrap_or_default().as_deref() == Some("true"))
+}
+
+#[tauri::command]
+fn set_start_minimized(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    let val = if enabled { "true" } else { "false" };
+    store
+        .set_setting("start_minimized", val)
+        .map_err(|error| format!("could not save setting: {error}"))
+}
+
 /// Run the Clipbox desktop application.
 pub fn run() {
     tauri::Builder::default()
@@ -145,7 +185,78 @@ pub fn run() {
             app.manage(AppState {
                 database_path: database_path.clone(),
             });
-            clipboard::start(database_path);
+            clipboard::start(database_path.clone());
+
+            let store = ClipboardStore::open(&database_path).ok();
+            let is_minimized = std::env::args().any(|arg| arg == "--minimized" || arg == "--hidden")
+                || store
+                    .as_ref()
+                    .and_then(|s| s.get_setting("start_minimized").ok().flatten())
+                    .as_deref()
+                    == Some("true");
+
+            // Setup system tray menu and icon
+            let show_item = tauri::menu::MenuItem::with_id(app, "show", "Show Clipbox", true, None::<&str>)?;
+            let hide_item = tauri::menu::MenuItem::with_id(app, "hide", "Hide to Tray", true, None::<&str>)?;
+            let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
+            let quit_item = tauri::menu::MenuItem::with_id(app, "quit", "Quit Clipbox", true, None::<&str>)?;
+            let tray_menu = tauri::menu::Menu::with_items(app, &[&show_item, &hide_item, &separator, &quit_item])?;
+
+            let mut tray_builder = tauri::tray::TrayIconBuilder::new()
+                .tooltip("Clipbox")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.unminimize();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "hide" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.hide();
+                        }
+                    }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            if window.is_visible().unwrap_or(false) {
+                                let _ = window.hide();
+                            } else {
+                                let _ = window.show();
+                                let _ = window.unminimize();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    }
+                });
+
+            if let Some(icon) = app.default_window_icon() {
+                tray_builder = tray_builder.icon(icon.clone());
+            }
+
+            let _tray = tray_builder.build(app)?;
+
+            // Initial window visibility based on start_minimized preference
+            if let Some(window) = app.get_webview_window("main") {
+                if !is_minimized {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
 
             Ok(())
         })
@@ -155,12 +266,17 @@ pub fn run() {
             minimize_window,
             toggle_maximize_window,
             close_window,
+            hide_window,
+            show_window,
+            exit_app,
             start_dragging,
             is_window_maximized,
             set_always_on_top,
             is_always_on_top,
             is_autostart_enabled,
-            set_autostart
+            set_autostart,
+            is_start_minimized,
+            set_start_minimized
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clipbox");

@@ -46,7 +46,9 @@ export function SettingsModal({ onClearHistory }: SettingsModalProps) {
     const saved = localStorage.getItem("clipbox:launchOnStartup");
     return saved !== null ? saved === "true" : true;
   });
-  const [startMinimized, setStartMinimized] = React.useState(false);
+  const [startMinimized, setStartMinimized] = React.useState(() => {
+    return localStorage.getItem("clipbox:startMinimized") === "true";
+  });
   const [alwaysOnTop, setAlwaysOnTop] = React.useState(() => {
     return localStorage.getItem("clipbox:alwaysOnTop") === "true";
   });
@@ -58,7 +60,7 @@ export function SettingsModal({ onClearHistory }: SettingsModalProps) {
   const [clearing, setClearing] = React.useState(false);
   const [clearedSuccess, setClearedSuccess] = React.useState(false);
 
-  // Query actual window always-on-top and autostart state when settings opens
+  // Query actual window always-on-top, autostart, and start-minimized state when settings opens
   React.useEffect(() => {
     if (!open) return;
     const querySettings = async () => {
@@ -71,6 +73,10 @@ export function SettingsModal({ onClearHistory }: SettingsModalProps) {
           const isAutostart = await invoke<boolean>("is_autostart_enabled");
           setLaunchOnStartup(isAutostart);
           localStorage.setItem("clipbox:launchOnStartup", String(isAutostart));
+
+          const isMin = await invoke<boolean>("is_start_minimized");
+          setStartMinimized(isMin);
+          localStorage.setItem("clipbox:startMinimized", String(isMin));
         }
       } catch (err) {
         console.warn("Could not query settings state", err);
@@ -88,6 +94,18 @@ export function SettingsModal({ onClearHistory }: SettingsModalProps) {
       }
     } catch (err) {
       console.error("Failed to update launch on startup setting", err);
+    }
+  };
+
+  const handleToggleStartMinimized = async (checked: boolean) => {
+    setStartMinimized(checked);
+    localStorage.setItem("clipbox:startMinimized", String(checked));
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("set_start_minimized", { enabled: checked });
+      }
+    } catch (err) {
+      console.error("Failed to update start minimized setting", err);
     }
   };
 
@@ -196,7 +214,7 @@ export function SettingsModal({ onClearHistory }: SettingsModalProps) {
                 <Switch
                   id="minimized-toggle"
                   checked={startMinimized}
-                  onCheckedChange={setStartMinimized}
+                  onCheckedChange={handleToggleStartMinimized}
                 />
               </div>
 
