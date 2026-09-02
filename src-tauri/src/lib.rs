@@ -8,6 +8,7 @@ use tauri::Manager;
 
 mod autostart;
 mod clipboard;
+mod image_clipboard;
 mod source;
 
 struct AppState {
