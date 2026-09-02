@@ -8,6 +8,7 @@ use tauri::Manager;
 
 mod autostart;
 mod clipboard;
+mod image_clipboard;
 mod source;
 
 struct AppState {
@@ -25,6 +26,9 @@ pub struct ClipboardEntry {
     pub window_title: Option<String>,
     pub app_icon: Option<String>,
     pub is_pinned: bool,
+    pub entry_type: String,
+    pub image_data: Option<String>,
+    pub image_dimensions: Option<String>,
 }
 
 impl From<CoreClipboardEntry> for ClipboardEntry {
@@ -38,6 +42,9 @@ impl From<CoreClipboardEntry> for ClipboardEntry {
             window_title: entry.window_title,
             app_icon: entry.app_icon,
             is_pinned: entry.is_pinned,
+            entry_type: entry.entry_type,
+            image_data: entry.image_data,
+            image_dimensions: entry.image_dimensions,
         }
     }
 }
@@ -281,6 +288,43 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
     clipboard.set_text(text).map_err(|e| e.to_string())
 }
 
+// ----------
+// Native Image Clipboard Copy Command
+// Description: Decodes a PNG image data URL and writes raw RGBA bitmap pixels directly to the OS clipboard via arboard.
+// ----------
+
+#[tauri::command]
+fn copy_image_to_clipboard(data_url: String) -> Result<(), String> {
+    let base64_str = if let Some(idx) = data_url.find(',') {
+        &data_url[idx + 1..]
+    } else {
+        &data_url
+    };
+
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    let png_bytes = STANDARD
+        .decode(base64_str)
+        .map_err(|e| format!("failed to decode base64 image data: {e}"))?;
+
+    let img = image::load_from_memory(&png_bytes)
+        .map_err(|e| format!("failed to load image from memory: {e}"))?
+        .to_rgba8();
+
+    let width = img.width() as usize;
+    let height = img.height() as usize;
+    let bytes = img.into_raw();
+
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard
+        .set_image(arboard::ImageData {
+            width,
+            height,
+            bytes: std::borrow::Cow::Owned(bytes),
+        })
+        .map_err(|e| e.to_string())
+}
+
 /// Run the Clipbox desktop application.
 pub fn run() {
     tauri::Builder::default()
@@ -379,6 +423,7 @@ pub fn run() {
             show_window,
             exit_app,
             copy_to_clipboard,
+            copy_image_to_clipboard,
             start_dragging,
             is_window_maximized,
             set_always_on_top,
