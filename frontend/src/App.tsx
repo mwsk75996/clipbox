@@ -14,6 +14,7 @@ import {
   RotateCcw,
   ChevronDown,
   ChevronUp,
+  Trash2,
 } from "lucide-react";
 import { startOfDay, endOfDay } from "date-fns";
 import type { DateRange } from "react-day-picker";
@@ -290,6 +291,20 @@ export default function App() {
     }
   };
 
+  // Delete single entry from history
+  const handleDelete = async (id: number, event: React.MouseEvent) => {
+    event.stopPropagation();
+    setEntries((prev) => prev.filter((entry) => entry.id !== id));
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("delete_entry", { id });
+      }
+    } catch (err) {
+      console.error("Failed to delete entry", err);
+      fetchEntries();
+    }
+  };
+
   const clearFilters = () => {
     setSelectedApp("all");
     setSearchQuery("");
@@ -503,6 +518,15 @@ export default function App() {
                             ) : (
                               <Copy className="size-3.5 text-muted-foreground" />
                             )}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                            title="Delete entry"
+                            onClick={(e) => handleDelete(entry.id, e)}
+                          >
+                            <Trash2 className="size-3.5" />
                           </Button>
                         </div>
                       </CardHeader>

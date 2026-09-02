@@ -195,6 +195,19 @@ impl ClipboardStore {
     }
 
     // ----------
+    // Delete Single Entry
+    // Description: Deletes an individual clipboard history entry by its primary key id.
+    // ----------
+    /// Delete a single clipboard record by id. Returns true if a record was deleted.
+    pub fn delete_entry(&self, id: i64) -> Result<bool> {
+        let deleted = self.connection.execute(
+            "DELETE FROM clipboard_entries WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(deleted > 0)
+    }
+
+    // ----------
     // App Settings Storage
     // Description: Key-value persistence for user preferences such as start minimized, always on top, and retention policy.
     // ----------
@@ -410,5 +423,24 @@ mod tests {
         assert_eq!(remaining.len(), 3);
         assert_eq!(remaining[0].content, "item 5");
         assert_eq!(remaining[2].content, "item 3");
+    }
+
+    #[test]
+    fn deletes_a_single_entry_by_id() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        let id1 = store.add_text("first").unwrap();
+        let id2 = store.add_text("second").unwrap();
+
+        assert_eq!(store.recent_entries(10).unwrap().len(), 2);
+
+        let deleted = store.delete_entry(id1).unwrap();
+        assert!(deleted);
+
+        let entries = store.recent_entries(10).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, id2);
+
+        let deleted_again = store.delete_entry(id1).unwrap();
+        assert!(!deleted_again);
     }
 }

@@ -67,6 +67,21 @@ fn clear_entries(state: tauri::State<'_, AppState>) -> Result<usize, String> {
 }
 
 // ----------
+// Delete Single Entry Command
+// Description: IPC command allowing the frontend to permanently remove an individual clipboard record by its unique ID.
+// ----------
+
+#[tauri::command]
+fn delete_entry(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+    store
+        .delete_entry(id)
+        .map_err(|error| format!("could not delete Clipbox entry: {error}"))
+}
+
+// ----------
 // Window Control Commands
 // Description: IPC commands for custom titlebar actions including minimize, toggle maximize, close, and query maximized state.
 // ----------
@@ -338,6 +353,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_entries,
             clear_entries,
+            delete_entry,
             minimize_window,
             toggle_maximize_window,
             close_window,
