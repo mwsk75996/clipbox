@@ -14,16 +14,16 @@ struct AppState {
     database_path: PathBuf,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ClipboardEntry {
-    id: i64,
-    content: String,
-    copied_at: i64,
-    source_app: Option<String>,
-    source_process: Option<String>,
-    window_title: Option<String>,
-    app_icon: Option<String>,
+pub struct ClipboardEntry {
+    pub id: i64,
+    pub content: String,
+    pub copied_at: i64,
+    pub source_app: Option<String>,
+    pub source_process: Option<String>,
+    pub window_title: Option<String>,
+    pub app_icon: Option<String>,
 }
 
 impl From<CoreClipboardEntry> for ClipboardEntry {
@@ -174,6 +174,17 @@ fn set_start_minimized(state: tauri::State<'_, AppState>, enabled: bool) -> Resu
         .map_err(|error| format!("could not save setting: {error}"))
 }
 
+// ----------
+// Native Clipboard Copy Command
+// Description: Writes text to the OS clipboard directly using arboard, ensuring copy actions from Clipbox cards succeed without browser focus limitations.
+// ----------
+
+#[tauri::command]
+fn copy_to_clipboard(text: String) -> Result<(), String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard.set_text(text).map_err(|e| e.to_string())
+}
+
 /// Run the Clipbox desktop application.
 pub fn run() {
     tauri::Builder::default()
@@ -185,7 +196,7 @@ pub fn run() {
             app.manage(AppState {
                 database_path: database_path.clone(),
             });
-            clipboard::start(database_path.clone());
+            clipboard::start(database_path.clone(), app.handle().clone());
 
             let store = ClipboardStore::open(&database_path).ok();
             let is_minimized = std::env::args().any(|arg| arg == "--minimized" || arg == "--hidden")
@@ -269,6 +280,7 @@ pub fn run() {
             hide_window,
             show_window,
             exit_app,
+            copy_to_clipboard,
             start_dragging,
             is_window_maximized,
             set_always_on_top,
