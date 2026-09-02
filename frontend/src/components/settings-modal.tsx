@@ -44,7 +44,9 @@ export function SettingsModal({ onClearHistory }: SettingsModalProps) {
   const [open, setOpen] = React.useState(false);
   const [launchOnStartup, setLaunchOnStartup] = React.useState(true);
   const [startMinimized, setStartMinimized] = React.useState(false);
-  const [alwaysOnTop, setAlwaysOnTop] = React.useState(false);
+  const [alwaysOnTop, setAlwaysOnTop] = React.useState(() => {
+    return localStorage.getItem("clipbox:alwaysOnTop") === "true";
+  });
   const [ignorePasswordManagers, setIgnorePasswordManagers] = React.useState(true);
   const [retentionLimit, setRetentionLimit] = React.useState("500");
   const [copiedPath, setCopiedPath] = React.useState(false);
@@ -52,6 +54,35 @@ export function SettingsModal({ onClearHistory }: SettingsModalProps) {
   const [confirmClear, setConfirmClear] = React.useState(false);
   const [clearing, setClearing] = React.useState(false);
   const [clearedSuccess, setClearedSuccess] = React.useState(false);
+
+  // Query actual window always-on-top state when settings opens
+  React.useEffect(() => {
+    if (!open) return;
+    const queryAlwaysOnTop = async () => {
+      try {
+        if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+          const isTop = await invoke<boolean>("is_always_on_top");
+          setAlwaysOnTop(isTop);
+          localStorage.setItem("clipbox:alwaysOnTop", String(isTop));
+        }
+      } catch (err) {
+        console.warn("Could not query always on top state", err);
+      }
+    };
+    queryAlwaysOnTop();
+  }, [open]);
+
+  const handleToggleAlwaysOnTop = async (checked: boolean) => {
+    setAlwaysOnTop(checked);
+    localStorage.setItem("clipbox:alwaysOnTop", String(checked));
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("set_always_on_top", { alwaysOnTop: checked });
+      }
+    } catch (err) {
+      console.error("Failed to update always on top setting", err);
+    }
+  };
 
   const dbPath = "%APPDATA%\\com.palethea.clipbox\\clipbox.sqlite3";
 
@@ -165,7 +196,7 @@ export function SettingsModal({ onClearHistory }: SettingsModalProps) {
                 <Switch
                   id="ontop-toggle"
                   checked={alwaysOnTop}
-                  onCheckedChange={setAlwaysOnTop}
+                  onCheckedChange={handleToggleAlwaysOnTop}
                 />
               </div>
             </div>
