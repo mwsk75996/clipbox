@@ -42,7 +42,10 @@ interface SettingsModalProps {
 
 export function SettingsModal({ onClearHistory }: SettingsModalProps) {
   const [open, setOpen] = React.useState(false);
-  const [launchOnStartup, setLaunchOnStartup] = React.useState(true);
+  const [launchOnStartup, setLaunchOnStartup] = React.useState(() => {
+    const saved = localStorage.getItem("clipbox:launchOnStartup");
+    return saved !== null ? saved === "true" : true;
+  });
   const [startMinimized, setStartMinimized] = React.useState(false);
   const [alwaysOnTop, setAlwaysOnTop] = React.useState(() => {
     return localStorage.getItem("clipbox:alwaysOnTop") === "true";
@@ -55,22 +58,38 @@ export function SettingsModal({ onClearHistory }: SettingsModalProps) {
   const [clearing, setClearing] = React.useState(false);
   const [clearedSuccess, setClearedSuccess] = React.useState(false);
 
-  // Query actual window always-on-top state when settings opens
+  // Query actual window always-on-top and autostart state when settings opens
   React.useEffect(() => {
     if (!open) return;
-    const queryAlwaysOnTop = async () => {
+    const querySettings = async () => {
       try {
         if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
           const isTop = await invoke<boolean>("is_always_on_top");
           setAlwaysOnTop(isTop);
           localStorage.setItem("clipbox:alwaysOnTop", String(isTop));
+
+          const isAutostart = await invoke<boolean>("is_autostart_enabled");
+          setLaunchOnStartup(isAutostart);
+          localStorage.setItem("clipbox:launchOnStartup", String(isAutostart));
         }
       } catch (err) {
-        console.warn("Could not query always on top state", err);
+        console.warn("Could not query settings state", err);
       }
     };
-    queryAlwaysOnTop();
+    querySettings();
   }, [open]);
+
+  const handleToggleLaunchOnStartup = async (checked: boolean) => {
+    setLaunchOnStartup(checked);
+    localStorage.setItem("clipbox:launchOnStartup", String(checked));
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("set_autostart", { enabled: checked });
+      }
+    } catch (err) {
+      console.error("Failed to update launch on startup setting", err);
+    }
+  };
 
   const handleToggleAlwaysOnTop = async (checked: boolean) => {
     setAlwaysOnTop(checked);
@@ -158,7 +177,7 @@ export function SettingsModal({ onClearHistory }: SettingsModalProps) {
                 <Switch
                   id="startup-toggle"
                   checked={launchOnStartup}
-                  onCheckedChange={setLaunchOnStartup}
+                  onCheckedChange={handleToggleLaunchOnStartup}
                 />
               </div>
 

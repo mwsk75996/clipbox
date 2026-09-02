@@ -6,6 +6,7 @@ use clipbox_core::{ClipboardEntry as CoreClipboardEntry, ClipboardStore};
 use serde::Serialize;
 use tauri::Manager;
 
+mod autostart;
 mod clipboard;
 mod source;
 
@@ -118,6 +119,21 @@ fn is_always_on_top(window: tauri::Window) -> Result<bool, String> {
         .map_err(|error| error.to_string())
 }
 
+// ----------
+// Autostart IPC Commands
+// Description: Commands allowing the frontend to query and configure OS boot autostart registration.
+// ----------
+
+#[tauri::command]
+fn is_autostart_enabled() -> Result<bool, String> {
+    autostart::is_autostart_enabled()
+}
+
+#[tauri::command]
+fn set_autostart(enabled: bool) -> Result<(), String> {
+    autostart::set_autostart(enabled)
+}
+
 /// Run the Clipbox desktop application.
 pub fn run() {
     tauri::Builder::default()
@@ -142,7 +158,9 @@ pub fn run() {
             start_dragging,
             is_window_maximized,
             set_always_on_top,
-            is_always_on_top
+            is_always_on_top,
+            is_autostart_enabled,
+            set_autostart
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clipbox");
