@@ -353,7 +353,9 @@ name = "clipbox"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "base64 0.22.1",
  "clipbox-core",
+ "serde",
  "tauri",
  "tauri-build",
  "windows",

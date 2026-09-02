@@ -3,40 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f5f5f2" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="icon" type="image/png" href="/clipbox-logo.png" />
     <title>Clipbox</title>
-    <style>
-      :root {
-        color-scheme: light dark;
-        font-family: system-ui, sans-serif;
-      }
-
-      body {
-        display: grid;
-        min-height: 100vh;
-        margin: 0;
-        place-items: center;
-        background: #f6f6f4;
-        color: #242422;
-      }
-
-      main {
-        max-width: 32rem;
-        padding: 2rem;
-        text-align: center;
-      }
-
-      @media (prefers-color-scheme: dark) {
-        body {
-          background: #242422;
-          color: #f6f6f4;
-        }
-      }
-    </style>
   </head>
   <body>
-    <main>
-      <h1>Clipbox</h1>
-      <p>The desktop shell is ready. Clipboard functionality will come next.</p>
-    </main>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

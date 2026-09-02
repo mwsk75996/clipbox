@@ -1,5 +1,6 @@
 # Node
 node_modules/
+dist/
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
@@ -7,6 +8,10 @@ pnpm-debug.log*
 # Rust and Tauri
 target/
 src-tauri/gen/
+src-tauri/icons/android/
+src-tauri/icons/ios/
+src-tauri/icons/Square*Logo.png
+src-tauri/icons/StoreLogo.png
 
 # Environment and local tooling
 .env

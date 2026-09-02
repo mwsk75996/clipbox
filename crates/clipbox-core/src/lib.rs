@@ -5,7 +5,9 @@
 
 mod storage;
 
-pub use storage::{ClipboardMetadata, ClipboardStore};
+pub use storage::{
+    strip_leading_empty_lines, ClipboardEntry, ClipboardMetadata, ClipboardStore,
+};
 
 /// The application name shared by frontends.
 pub const APP_NAME: &str = "Clipbox";

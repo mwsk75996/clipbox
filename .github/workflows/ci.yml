@@ -1,5 +1,7 @@
 name: CI
 
+# Automatic CI runs are disabled until ready for distribution.
+# Can only be manually triggered via workflow_dispatch.
 on:
   workflow_dispatch:
 
