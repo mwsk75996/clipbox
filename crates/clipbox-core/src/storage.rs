@@ -126,7 +126,40 @@ impl ClipboardStore {
             ],
         )?;
 
-        Ok(self.connection.last_insert_rowid())
+        let last_id = self.connection.last_insert_rowid();
+
+        // Enforce retention limit if configured
+        if let Ok(Some(limit_str)) = self.get_setting("retention_limit") {
+            if let Ok(limit) = limit_str.parse::<usize>() {
+                if limit > 0 {
+                    let _ = self.prune_entries(limit);
+                }
+            }
+        }
+
+        Ok(last_id)
+    }
+
+    // ----------
+    // Retention Limit Pruning
+    // Description: Deletes surplus records exceeding the configured history retention limit, keeping only the newest entries.
+    // ----------
+    /// Retain only the most recent `limit` records, deleting older ones.
+    /// If `limit == 0`, no records are deleted (unlimited retention).
+    pub fn prune_entries(&self, limit: usize) -> Result<usize> {
+        if limit == 0 {
+            return Ok(0);
+        }
+
+        let deleted = self.connection.execute(
+            "DELETE FROM clipboard_entries
+             WHERE id NOT IN (
+                 SELECT id FROM clipboard_entries ORDER BY id DESC LIMIT ?1
+             )",
+            params![limit as i64],
+        )?;
+
+        Ok(deleted)
     }
 
     /// Return the newest stored entries first.
@@ -344,5 +377,38 @@ mod tests {
             store.get_setting("start_minimized").unwrap(),
             Some("false".into())
         );
+    }
+
+    #[test]
+    fn prunes_entries_exceeding_retention_limit() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        for i in 1..=10 {
+            store.add_text(&format!("entry {i}")).unwrap();
+        }
+
+        assert_eq!(store.recent_entries(20).unwrap().len(), 10);
+
+        let pruned = store.prune_entries(5).unwrap();
+        assert_eq!(pruned, 5);
+
+        let remaining = store.recent_entries(20).unwrap();
+        assert_eq!(remaining.len(), 5);
+        assert_eq!(remaining[0].content, "entry 10");
+        assert_eq!(remaining[4].content, "entry 6");
+    }
+
+    #[test]
+    fn automatically_enforces_retention_limit_on_add() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        store.set_setting("retention_limit", "3").unwrap();
+
+        for i in 1..=5 {
+            store.add_text(&format!("item {i}")).unwrap();
+        }
+
+        let remaining = store.recent_entries(20).unwrap();
+        assert_eq!(remaining.len(), 3);
+        assert_eq!(remaining[0].content, "item 5");
+        assert_eq!(remaining[2].content, "item 3");
     }
 }

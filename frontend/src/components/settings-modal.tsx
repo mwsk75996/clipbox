@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   Settings,
   Folder,
+  FolderOpen,
   HardDrive,
   Power,
   Shield,
@@ -53,14 +54,18 @@ export function SettingsModal({ onClearHistory }: SettingsModalProps) {
     return localStorage.getItem("clipbox:alwaysOnTop") === "true";
   });
   const [ignorePasswordManagers, setIgnorePasswordManagers] = React.useState(true);
-  const [retentionLimit, setRetentionLimit] = React.useState("500");
+  const [retentionLimit, setRetentionLimit] = React.useState(() => {
+    return localStorage.getItem("clipbox:retentionLimit") || "500";
+  });
+  const [dbPath, setDbPath] = React.useState("%APPDATA%\\com.palethea.clipbox\\clipbox.sqlite3");
   const [copiedPath, setCopiedPath] = React.useState(false);
+  const [prunedNotice, setPrunedNotice] = React.useState<number | null>(null);
 
   const [confirmClear, setConfirmClear] = React.useState(false);
   const [clearing, setClearing] = React.useState(false);
   const [clearedSuccess, setClearedSuccess] = React.useState(false);
 
-  // Query actual window always-on-top, autostart, and start-minimized state when settings opens
+  // Query actual window always-on-top, autostart, start-minimized, db path, and retention limit state when settings opens
   React.useEffect(() => {
     if (!open) return;
     const querySettings = async () => {
@@ -77,6 +82,13 @@ export function SettingsModal({ onClearHistory }: SettingsModalProps) {
           const isMin = await invoke<boolean>("is_start_minimized");
           setStartMinimized(isMin);
           localStorage.setItem("clipbox:startMinimized", String(isMin));
+
+          const realPath = await invoke<string>("get_database_path");
+          setDbPath(realPath);
+
+          const realRetention = await invoke<string>("get_retention_limit");
+          setRetentionLimit(realRetention);
+          localStorage.setItem("clipbox:retentionLimit", realRetention);
         }
       } catch (err) {
         console.warn("Could not query settings state", err);
@@ -121,12 +133,37 @@ export function SettingsModal({ onClearHistory }: SettingsModalProps) {
     }
   };
 
-  const dbPath = "%APPDATA%\\com.palethea.clipbox\\clipbox.sqlite3";
+  const handleRetentionLimitChange = async (value: string) => {
+    setRetentionLimit(value);
+    localStorage.setItem("clipbox:retentionLimit", value);
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        const pruned = await invoke<number>("set_retention_limit", { limit: value });
+        if (pruned > 0) {
+          setPrunedNotice(pruned);
+          setTimeout(() => setPrunedNotice(null), 3500);
+          onClearHistory?.();
+        }
+      }
+    } catch (err) {
+      console.error("Failed to update retention limit", err);
+    }
+  };
 
   const handleCopyPath = () => {
     navigator.clipboard.writeText(dbPath);
     setCopiedPath(true);
     setTimeout(() => setCopiedPath(false), 1500);
+  };
+
+  const handleOpenDatabaseDirectory = async () => {
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("open_database_directory");
+      }
+    } catch (err) {
+      console.error("Failed to open database directory", err);
+    }
   };
 
   const handleClearHistory = async () => {
@@ -263,7 +300,18 @@ export function SettingsModal({ onClearHistory }: SettingsModalProps) {
                     variant="outline"
                     size="sm"
                     className="h-8 px-3 gap-1.5 shrink-0 text-xs"
+                    onClick={handleOpenDatabaseDirectory}
+                    title="Reveal in File Explorer"
+                  >
+                    <FolderOpen className="size-3" />
+                    Reveal
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 px-3 gap-1.5 shrink-0 text-xs"
                     onClick={handleCopyPath}
+                    title="Copy full database path"
                   >
                     {copiedPath ? (
                       <>
@@ -289,8 +337,13 @@ export function SettingsModal({ onClearHistory }: SettingsModalProps) {
                   <p className="text-xs text-muted-foreground">
                     Maximum number of recent copies stored before recycling oldest entries.
                   </p>
+                  {prunedNotice !== null && (
+                    <p className="text-[11px] text-green-600 dark:text-green-400 font-medium">
+                      ✓ Pruned {prunedNotice} surplus {prunedNotice === 1 ? "entry" : "entries"} immediately.
+                    </p>
+                  )}
                 </div>
-                <Select value={retentionLimit} onValueChange={setRetentionLimit}>
+                <Select value={retentionLimit} onValueChange={handleRetentionLimitChange}>
                   <SelectTrigger className="w-36 h-8 text-xs">
                     <SelectValue placeholder="Retention" />
                   </SelectTrigger>
