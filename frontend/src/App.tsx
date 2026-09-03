@@ -24,6 +24,8 @@ import {
   PauseCircle,
   ExternalLink,
   TriangleAlert,
+  Download,
+  Loader2,
   X,
 } from "lucide-react";
 import { startOfDay, endOfDay } from "date-fns";
@@ -133,6 +135,25 @@ interface AppToast {
   kind: "success" | "error";
 }
 
+type UpdateStatus =
+  | { phase: "idle" }
+  | { phase: "checking" }
+  | { phase: "downloading"; downloaded: number; total: number }
+  | { phase: "ready"; path: string };
+
+// Numeric dotted-version comparison ignoring a leading "v".
+// Returns negative/zero/positive; malformed parts count as 0 (never newer).
+function compareAppVersions(a: string, b: string): number {
+  const parse = (v: string) => v.replace(/^v/i, "").split(".").map((n) => Number(n) || 0);
+  const pa = parse(a);
+  const pb = parse(b);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
 const PREVIEW_ENTRIES: ClipboardEntry[] = [
   {
     id: 3,
@@ -227,6 +248,8 @@ export default function App() {
   const [trashRetention, setTrashRetention] = React.useState<string | null>(null);
   const [closePromptOpen, setClosePromptOpen] = React.useState(false);
   const [closeRemember, setCloseRemember] = React.useState(false);
+  const [appVersion, setAppVersion] = React.useState<string | null>(null);
+  const [updateStatus, setUpdateStatus] = React.useState<UpdateStatus>({ phase: "idle" });
   const [toasts, setToasts] = React.useState<AppToast[]>([]);
 
   // Keyboard shortcuts and privacy monitoring state
@@ -237,6 +260,9 @@ export default function App() {
   const inFlightDeletionsRef = React.useRef<Set<number>>(new Set());
   const lastFetchTimeRef = React.useRef<number>(0);
   const toastIdRef = React.useRef<number>(0);
+  const updateBusyRef = React.useRef(false);
+  const installFiredRef = React.useRef(false);
+  const autoCheckedRef = React.useRef(false);
 
   // Stacked transient confirmation pills (each auto-dismisses independently).
   const showToast = React.useCallback((message: string, kind: "success" | "error" = "success") => {
@@ -326,6 +352,7 @@ export default function App() {
     let unlistenBump: (() => void) | undefined;
     let unlistenPause: (() => void) | undefined;
     let unlistenClose: (() => void) | undefined;
+    let unlistenProgress: (() => void) | undefined;
 
     const setupListener = async () => {
       try {
@@ -360,6 +387,24 @@ export default function App() {
             setCloseRemember(false);
             setClosePromptOpen(true);
           });
+
+          unlistenProgress = await listen<{ downloaded: number; total: number }>(
+            "update://download-progress",
+            (event) => {
+              // Late-arriving events must not clobber a finished state.
+              setUpdateStatus((prev) =>
+                prev.phase === "idle" ||
+                prev.phase === "checking" ||
+                prev.phase === "downloading"
+                  ? {
+                      phase: "downloading",
+                      downloaded: event.payload.downloaded,
+                      total: event.payload.total,
+                    }
+                  : prev
+              );
+            }
+          );
         }
       } catch (err) {
         console.warn("Could not register clipboard event listeners", err);
@@ -371,6 +416,7 @@ export default function App() {
       if (unlistenBump) unlistenBump();
       if (unlistenPause) unlistenPause();
       if (unlistenClose) unlistenClose();
+      if (unlistenProgress) unlistenProgress();
     };
   }, []);
 
@@ -673,6 +719,102 @@ export default function App() {
       console.error("Failed to apply close choice", err);
     }
   };
+
+  // Check GitHub Releases for a newer setup asset. Silent unless manual or
+  // an update is found; offline failures simply leave the idle state.
+  const checkForUpdates = React.useCallback(
+    async (manual: boolean) => {
+      if (updateBusyRef.current || !appVersion) return;
+      updateBusyRef.current = true;
+      if (manual) {
+        setUpdateStatus({ phase: "checking" });
+      }
+      try {
+        const response = await fetch(
+          "https://api.github.com/repos/mwsk75996/clipbox/releases/latest"
+        );
+        if (!response.ok) throw new Error(`release lookup failed: ${response.status}`);
+        const latest = (await response.json()) as {
+          tag_name?: string;
+          assets?: { name: string; browser_download_url: string }[];
+        };
+        const tag = latest.tag_name ?? "";
+        const asset = (latest.assets ?? []).find(
+          (a) => a.name.toLowerCase().endsWith(".exe") && /x64|setup/i.test(a.name)
+        );
+        if (
+          asset &&
+          compareAppVersions(tag, appVersion) > 0 &&
+          typeof window !== "undefined" &&
+          "__TAURI_INTERNALS__" in window
+        ) {
+          setUpdateStatus({ phase: "downloading", downloaded: 0, total: 0 });
+          const path = await invoke<string>("download_update", {
+            url: asset.browser_download_url,
+            filename: asset.name,
+          });
+          setUpdateStatus({ phase: "ready", path });
+          return;
+        }
+        if (manual) {
+          showToast("You're up to date");
+        }
+      } catch (err) {
+        console.warn("Update check failed", err);
+        if (manual) {
+          showToast("Update check failed", "error");
+        }
+      } finally {
+        updateBusyRef.current = false;
+        setUpdateStatus((prev) => (prev.phase === "checking" ? { phase: "idle" } : prev));
+      }
+    },
+    [appVersion, showToast]
+  );
+
+  const installUpdate = React.useCallback(() => {
+    if (updateStatus.phase !== "ready" || installFiredRef.current) return;
+    installFiredRef.current = true;
+    if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+      // Resolves never on success (the app exits); failure restores the button.
+      invoke("install_update", { path: updateStatus.path }).catch((err) => {
+        console.error("Failed to install update", err);
+        showToast("Update install failed", "error");
+        installFiredRef.current = false;
+        setUpdateStatus({ phase: "ready", path: updateStatus.path });
+      });
+    } else {
+      installFiredRef.current = false;
+      setUpdateStatus({ phase: "idle" });
+    }
+  }, [updateStatus, showToast]);
+
+  // Read the packaged version once; auto-check shortly after startup.
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+          const version = await invoke<string>("get_app_version");
+          if (!cancelled) setAppVersion(version);
+        }
+      } catch (err) {
+        console.warn("Could not read app version", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (!appVersion || autoCheckedRef.current) return;
+    autoCheckedRef.current = true;
+    const timer = window.setTimeout(() => {
+      void checkForUpdates(false);
+    }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [appVersion, checkForUpdates]);
 
   // Reset keyboard focus when search or filters change
   React.useEffect(() => {
@@ -1060,7 +1202,7 @@ export default function App() {
         <main className="flex-1 w-full overflow-hidden flex flex-col min-h-0 relative">
           {showDeleted ? (
             <div className="relative flex-1 w-full min-h-0 flex flex-col overflow-hidden">
-              <ScrollArea className="flex-1 w-full h-full fade-bottom-mask">
+              <ScrollArea className="flex-1 w-full h-full">
                 <div className="max-w-4xl w-full mx-auto px-6 pt-5 pb-20 space-y-3">
                   <div className="flex items-center justify-between gap-4">
                     <div>
@@ -1157,7 +1299,7 @@ export default function App() {
             </div>
           ) : (
             <div className="relative flex-1 w-full min-h-0 flex flex-col overflow-hidden">
-              <ScrollArea className="flex-1 w-full h-full fade-bottom-mask">
+              <ScrollArea className="flex-1 w-full h-full">
                 <div className="max-w-4xl w-full mx-auto px-6 pt-5 pb-20 space-y-3">
                 {filteredEntries.map((entry, index) => {
                   const content = stripLeadingEmptyLines(entry.content);
@@ -1495,6 +1637,50 @@ export default function App() {
           </div>,
           document.body
         )}
+
+      {/* Bottom status footer */}
+      <footer className="border-t bg-card/60 backdrop-blur px-6 py-1.5 shrink-0">
+        <div className="max-w-4xl mx-auto flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+          <span className="select-none">{appVersion ? `v${appVersion}` : ""}</span>
+          {appVersion && updateStatus.phase === "ready" ? (
+            <Button
+              size="sm"
+              onClick={installUpdate}
+              className="h-7 gap-1.5 text-xs"
+              title="Install the downloaded update and restart"
+            >
+              <RotateCcw className="size-3.5" />
+              <span>Restart to update</span>
+            </Button>
+          ) : appVersion ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void checkForUpdates(true)}
+              disabled={updateStatus.phase !== "idle"}
+              className="h-7 gap-1.5 text-xs"
+              title="Check for updates"
+            >
+              {updateStatus.phase === "downloading" ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Download className="size-3.5" />
+              )}
+              <span>
+                {updateStatus.phase === "checking"
+                  ? "Checking..."
+                  : updateStatus.phase === "downloading"
+                    ? updateStatus.total > 0
+                      ? `Downloading ${Math.round(
+                          (updateStatus.downloaded / updateStatus.total) * 100
+                        )}%`
+                      : "Downloading..."
+                    : "Check for updates"}
+              </span>
+            </Button>
+          ) : null}
+        </div>
+      </footer>
 
       <ImageLightbox
         entry={previewEntry}

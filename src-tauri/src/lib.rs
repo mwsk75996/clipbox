@@ -388,6 +388,114 @@ fn set_close_behavior(state: tauri::State<'_, AppState>, behavior: String) -> Re
         .map_err(|error| format!("could not save close behavior setting: {error}"))
 }
 
+// ----------
+// Self-Update Commands
+// Description: Version query plus GitHub Releases download/install flow: stream the setup asset to temp with progress events, then silent-install and relaunch.
+// ----------
+
+#[tauri::command]
+fn get_app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[tauri::command]
+async fn download_update(
+    app: tauri::AppHandle,
+    url: String,
+    filename: String,
+) -> Result<String, String> {
+    const TRUSTED_PREFIXES: [&str; 2] = [
+        "https://github.com/mwsk75996/clipbox/releases/download/",
+        "https://objects.githubusercontent.com/",
+    ];
+    if !TRUSTED_PREFIXES
+        .iter()
+        .any(|prefix| url.starts_with(prefix))
+    {
+        return Err("refusing to download from an untrusted url".into());
+    }
+
+    let safe_name: String = filename
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
+        .collect();
+    if safe_name.is_empty() || !safe_name.to_lowercase().ends_with(".exe") {
+        return Err("refusing to download a non-installer file".into());
+    }
+    let dest = std::env::temp_dir().join(safe_name);
+
+    let mut response = reqwest::get(&url)
+        .await
+        .map_err(|error| format!("update download failed: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("update download failed: {error}"))?;
+    let total = response.content_length().unwrap_or(0);
+
+    let mut file = std::fs::File::create(&dest)
+        .map_err(|error| format!("could not stage update: {error}"))?;
+    let mut downloaded: u64 = 0;
+    loop {
+        match response
+            .chunk()
+            .await
+            .map_err(|error| format!("update download failed: {error}"))?
+        {
+            Some(bytes) => {
+                use std::io::Write;
+                file.write_all(&bytes)
+                    .map_err(|error| format!("could not stage update: {error}"))?;
+                downloaded += bytes.len() as u64;
+                let _ = app.emit(
+                    "update://download-progress",
+                    serde_json::json!({ "downloaded": downloaded, "total": total }),
+                );
+            }
+            None => break,
+        }
+    }
+
+    Ok(dest.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn install_update(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    // Only ever run what download_update staged: an .exe directly in temp.
+    let candidate = std::path::PathBuf::from(&path);
+    if candidate.extension().and_then(|ext| ext.to_str()) != Some("exe")
+        || candidate.parent() != Some(std::env::temp_dir().as_path())
+    {
+        return Err("refusing to run updater outside the temp directory".into());
+    }
+
+    #[cfg(windows)]
+    {
+        // Relaunch target is the running exe (the installed location in production).
+        let current = std::env::current_exe()
+            .map_err(|error| format!("could not locate running executable: {error}"))?;
+        // Silent-install, then reopen the fresh build. Our own exit lands
+        // first; the delay absorbs slow shutdowns and installer startup.
+        // Hidden console: no window may flash for this background handoff.
+        let script = format!(
+            "timeout /t 10 /nobreak >nul & \"{path}\" /S & start \"\" \"{}\"",
+            current.display()
+        );
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("cmd")
+            .args(["/C", &script])
+            .creation_flags(0x08000000)
+            .spawn()
+            .map_err(|error| format!("could not launch updater: {error}"))?;
+        app.exit(0);
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (app, path);
+        Err("self-update is currently supported on Windows".into())
+    }
+}
+
 #[tauri::command]
 fn exit_app(app: tauri::AppHandle) {
     app.exit(0);
@@ -1244,6 +1352,9 @@ pub fn run() {
             show_window,
             get_close_behavior,
             set_close_behavior,
+            get_app_version,
+            download_update,
+            install_update,
             exit_app,
             copy_to_clipboard,
             copy_image_to_clipboard,
