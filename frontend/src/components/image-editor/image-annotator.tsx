@@ -524,27 +524,34 @@ export function ImageAnnotator({
       ctx.lineTo(end.x, end.y);
       ctx.stroke();
     } else if (tool === "arrow") {
+      const angle = Math.atan2(end.y - start.y, end.x - start.x);
+      const dist = Math.hypot(end.x - start.x, end.y - start.y);
+      const headLen = Math.max(16, shape.width * 3.8);
+      const effectiveHeadLen = Math.min(headLen, dist * 0.9);
+      const arrowAngle = Math.PI / 6; // 30 degrees
+
+      // Stop the shaft line inside the base of the arrowhead so its rounded cap never pokes out past the tip
+      const shaftEndDist = Math.max(0, dist - effectiveHeadLen * 0.65);
+      const shaftEndX = start.x + shaftEndDist * Math.cos(angle);
+      const shaftEndY = start.y + shaftEndDist * Math.sin(angle);
+
       // Draw line shaft
       ctx.beginPath();
       ctx.moveTo(start.x, start.y);
-      ctx.lineTo(end.x, end.y);
+      ctx.lineTo(shaftEndX, shaftEndY);
       ctx.stroke();
 
-      // Draw arrowhead triangle
-      const angle = Math.atan2(end.y - start.y, end.x - start.x);
-      const headLen = Math.max(14, shape.width * 3.5);
-      const arrowAngle = Math.PI / 6; // 30 degrees
-
+      // Draw sharp arrowhead triangle
       ctx.fillStyle = shape.color;
       ctx.beginPath();
       ctx.moveTo(end.x, end.y);
       ctx.lineTo(
-        end.x - headLen * Math.cos(angle - arrowAngle),
-        end.y - headLen * Math.sin(angle - arrowAngle)
+        end.x - effectiveHeadLen * Math.cos(angle - arrowAngle),
+        end.y - effectiveHeadLen * Math.sin(angle - arrowAngle)
       );
       ctx.lineTo(
-        end.x - headLen * Math.cos(angle + arrowAngle),
-        end.y - headLen * Math.sin(angle + arrowAngle)
+        end.x - effectiveHeadLen * Math.cos(angle + arrowAngle),
+        end.y - effectiveHeadLen * Math.sin(angle + arrowAngle)
       );
       ctx.closePath();
       ctx.fill();
