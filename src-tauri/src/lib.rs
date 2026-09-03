@@ -115,8 +115,22 @@ fn minimize_window(window: tauri::Window) -> Result<(), String> {
     window.minimize().map_err(|error| error.to_string())
 }
 
+static LAST_MAXIMIZE_TOGGLE: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
+
 #[tauri::command]
 fn toggle_maximize_window(window: tauri::Window) -> Result<(), String> {
+    let mut guard = LAST_MAXIMIZE_TOGGLE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let now = std::time::Instant::now();
+    if let Some(last) = *guard {
+        if now.duration_since(last) < std::time::Duration::from_millis(400) {
+            return Ok(());
+        }
+    }
+    *guard = Some(now);
+
     if window.is_maximized().unwrap_or(false) {
         window.unmaximize().map_err(|error| error.to_string())
     } else {

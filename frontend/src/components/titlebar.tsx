@@ -32,6 +32,8 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
     return () => window.removeEventListener("resize", checkMaximized);
   }, [checkMaximized]);
 
+  const lastToggleRef = React.useRef(0);
+
   const handleMouseDown = (event: React.MouseEvent) => {
     // Only drag on left mouse button
     if (event.button !== 0) return;
@@ -39,11 +41,8 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
     // Ignore clicks on buttons
     if ((event.target as HTMLElement).closest("button")) return;
 
-    // Double click toggles maximize
-    if (event.detail === 2) {
-      handleToggleMaximize();
-      return;
-    }
+    // Ignore double/triple clicks on mousedown (handled cleanly by onDoubleClick)
+    if (event.detail > 1) return;
 
     // Programmatically start window dragging via native Tauri IPC
     try {
@@ -66,6 +65,11 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
 
   const handleToggleMaximize = async (e?: React.MouseEvent) => {
     e?.stopPropagation();
+    const now = Date.now();
+    // Debounce rapid successive toggles to prevent animation double-trigger
+    if (now - lastToggleRef.current < 400) return;
+    lastToggleRef.current = now;
+
     try {
       await invoke("toggle_maximize_window");
       await checkMaximized();
@@ -87,6 +91,7 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
     <div
       data-tauri-drag-region
       onMouseDown={handleMouseDown}
+      onDoubleClick={handleToggleMaximize}
       className="h-9 w-full bg-card border-b flex items-center justify-between select-none z-50 sticky top-0 cursor-default"
     >
       {/* App Branding (Draggable) */}
