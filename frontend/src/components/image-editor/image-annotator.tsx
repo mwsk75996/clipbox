@@ -1164,128 +1164,103 @@ export function ImageAnnotator({
 
             {/* Color & Width Popover */}
             {activeTool !== "eraser" && (
-              <div className="flex items-center gap-1.5">
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-8 px-2 gap-1.5 text-xs font-medium border"
-                      title="Color & Thickness"
-                    >
-                      <div
-                        className="size-4 rounded-full border border-black/20 shadow-sm"
-                        style={{
-                          backgroundColor:
-                            activeTool === "highlighter" ? highlighterColor : penColor,
-                        }}
-                      />
-                      <Palette className="size-3 text-muted-foreground" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent align="start" className="w-56 p-3 space-y-3">
-                    <div>
-                      <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
-                        Colors
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {(activeTool === "highlighter" ? HIGHLIGHTER_COLORS : PEN_COLORS).map(
-                          (c) => (
-                            <button
-                              key={c.value}
-                              type="button"
-                              onClick={() => {
-                                if (activeTool === "highlighter") {
-                                  setHighlighterColor(c.value);
-                                } else {
-                                  setPenColor(c.value);
-                                }
-                              }}
-                              className={`size-6 rounded-full border transition-transform flex items-center justify-center ${
-                                (activeTool === "highlighter" ? highlighterColor : penColor) ===
-                                c.value
-                                  ? "scale-110 ring-2 ring-primary"
-                                  : "hover:scale-105"
-                              }`}
-                              style={{ backgroundColor: c.value }}
-                              title={c.name}
-                            >
-                              {(activeTool === "highlighter" ? highlighterColor : penColor) ===
-                                c.value && (
-                                <Check
-                                  className={`size-3 ${
-                                    c.value === "#ffffff" || c.value === "#facc15"
-                                      ? "text-black"
-                                      : "text-white"
-                                  }`}
-                                />
-                              )}
-                            </button>
-                          )
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="border-t pt-2">
-                      <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
-                        Thickness
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        {activeTool === "highlighter"
-                          ? HIGHLIGHTER_WIDTHS.map((w) => (
-                              <Button
-                                key={w.value}
-                                variant={highlighterWidth === w.value ? "secondary" : "ghost"}
-                                size="sm"
-                                className="flex-1 h-7 text-xs"
-                                onClick={() => setHighlighterWidth(w.value)}
-                              >
-                                {w.label}
-                              </Button>
-                            ))
-                          : STROKE_WIDTHS.map((w) => (
-                              <Button
-                                key={w.value}
-                                variant={strokeWidth === w.value ? "secondary" : "ghost"}
-                                size="sm"
-                                className="flex-1 h-7 text-xs"
-                                onClick={() => setStrokeWidth(w.value)}
-                              >
-                                {w.label}
-                              </Button>
-                            ))}
-                      </div>
-                    </div>
-                  </PopoverContent>
-                </Popover>
-
-                {/* Quick Color Dots for fast switching without opening popover */}
-                <div className="hidden sm:flex items-center gap-1 pl-1">
-                  {(activeTool === "highlighter"
-                    ? HIGHLIGHTER_COLORS.slice(0, 4)
-                    : PEN_COLORS.slice(0, 5)
-                  ).map((c) => (
-                    <button
-                      key={c.value}
-                      type="button"
-                      onClick={() => {
-                        if (activeTool === "highlighter") {
-                          setHighlighterColor(c.value);
-                        } else {
-                          setPenColor(c.value);
-                        }
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 px-2.5 gap-1.5 text-xs font-medium border"
+                    title="Color & Thickness"
+                  >
+                    <div
+                      className="size-4 rounded-full border border-black/20 shadow-sm"
+                      style={{
+                        backgroundColor:
+                          activeTool === "highlighter" ? highlighterColor : penColor,
                       }}
-                      className={`size-4 rounded-full border border-black/20 transition-transform ${
-                        (activeTool === "highlighter" ? highlighterColor : penColor) === c.value
-                          ? "scale-125 ring-1.5 ring-primary"
-                          : "hover:scale-110 opacity-80 hover:opacity-100"
-                      }`}
-                      style={{ backgroundColor: c.value }}
-                      title={c.name}
                     />
-                  ))}
-                </div>
-              </div>
+                    <Palette className="size-3.5 text-muted-foreground" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-72 p-3.5 space-y-3.5">
+                  <div>
+                    <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                      Colors
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {(activeTool === "highlighter" ? HIGHLIGHTER_COLORS : PEN_COLORS).map(
+                        (c) => (
+                          <button
+                            key={c.value}
+                            type="button"
+                            onClick={() => {
+                              if (activeTool === "highlighter") {
+                                setHighlighterColor(c.value);
+                              } else {
+                                setPenColor(c.value);
+                              }
+                            }}
+                            className={`size-7 rounded-full border transition-transform flex items-center justify-center ${
+                              (activeTool === "highlighter" ? highlighterColor : penColor) ===
+                              c.value
+                                ? "scale-110 ring-2 ring-primary ring-offset-1 ring-offset-background"
+                                : "hover:scale-105"
+                            }`}
+                            style={{ backgroundColor: c.value }}
+                            title={c.name}
+                          >
+                            {(activeTool === "highlighter" ? highlighterColor : penColor) ===
+                              c.value && (
+                              <Check
+                                className={`size-3.5 ${
+                                  c.value === "#ffffff" || c.value === "#facc15"
+                                    ? "text-black"
+                                    : "text-white"
+                                }`}
+                              />
+                            )}
+                          </button>
+                        )
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="border-t pt-2.5">
+                    <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                      Thickness
+                    </div>
+                    {activeTool === "highlighter" ? (
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {HIGHLIGHTER_WIDTHS.map((w) => (
+                          <Button
+                            key={w.value}
+                            variant={highlighterWidth === w.value ? "secondary" : "ghost"}
+                            size="sm"
+                            className="h-7 text-xs font-medium"
+                            onClick={() => setHighlighterWidth(w.value)}
+                          >
+                            {w.label}
+                          </Button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {STROKE_WIDTHS.map((w) => (
+                          <Button
+                            key={w.value}
+                            variant={strokeWidth === w.value ? "secondary" : "ghost"}
+                            size="sm"
+                            className="h-7 text-xs font-medium"
+                            onClick={() => setStrokeWidth(w.value)}
+                          >
+                            {w.label}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
             )}
           </div>
         )}
