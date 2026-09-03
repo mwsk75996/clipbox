@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clipbox_core::{ClipboardEntry as CoreClipboardEntry, ClipboardStore};
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 mod autostart;
 mod clipboard;
@@ -360,6 +360,275 @@ fn set_retention_limit(state: tauri::State<'_, AppState>, limit: String) -> Resu
 }
 
 // ----------
+// Privacy Settings
+// Description: Settings for clipboard capture pause/resume, password manager filtering, excluded applications, and duplicate handling.
+// ----------
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct PrivacySettings {
+    pub monitoring_paused: bool,
+    pub ignore_password_managers: bool,
+    pub excluded_applications: Vec<String>,
+    pub duplicate_handling: String, // "bump", "ignore", "create_new"
+}
+
+// ----------
+// Keybind Customization
+// Description: User-defined keybindings for app shortcuts with modifier keys, key codes, and human-readable labels.
+// ----------
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct KeyBinding {
+    pub key: String,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub meta: bool,
+    pub label: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct ShortcutSettings {
+    pub focus_search: KeyBinding,
+    pub nav_down: KeyBinding,
+    pub nav_up: KeyBinding,
+    pub copy_entry: KeyBinding,
+    pub expand_preview: KeyBinding,
+    pub toggle_pin: KeyBinding,
+    pub delete_entry: KeyBinding,
+    pub clear_escape: KeyBinding,
+}
+
+impl Default for ShortcutSettings {
+    fn default() -> Self {
+        Self {
+            focus_search: KeyBinding {
+                key: "f".into(),
+                ctrl: true,
+                shift: false,
+                alt: false,
+                meta: false,
+                label: "Ctrl + F".into(),
+            },
+            nav_down: KeyBinding {
+                key: "ArrowDown".into(),
+                ctrl: false,
+                shift: false,
+                alt: false,
+                meta: false,
+                label: "↓ (Arrow Down)".into(),
+            },
+            nav_up: KeyBinding {
+                key: "ArrowUp".into(),
+                ctrl: false,
+                shift: false,
+                alt: false,
+                meta: false,
+                label: "↑ (Arrow Up)".into(),
+            },
+            copy_entry: KeyBinding {
+                key: "Enter".into(),
+                ctrl: false,
+                shift: false,
+                alt: false,
+                meta: false,
+                label: "Enter".into(),
+            },
+            expand_preview: KeyBinding {
+                key: " ".into(),
+                ctrl: false,
+                shift: false,
+                alt: false,
+                meta: false,
+                label: "Space".into(),
+            },
+            toggle_pin: KeyBinding {
+                key: "p".into(),
+                ctrl: false,
+                shift: false,
+                alt: false,
+                meta: false,
+                label: "P".into(),
+            },
+            delete_entry: KeyBinding {
+                key: "Delete".into(),
+                ctrl: false,
+                shift: false,
+                alt: false,
+                meta: false,
+                label: "Delete".into(),
+            },
+            clear_escape: KeyBinding {
+                key: "Escape".into(),
+                ctrl: false,
+                shift: false,
+                alt: false,
+                meta: false,
+                label: "Escape".into(),
+            },
+        }
+    }
+}
+
+// ----------
+// Privacy & Shortcut Tauri Commands
+// Description: Query and mutate privacy controls, monitoring pause state, application exclusions, and keyboard shortcuts.
+// ----------
+
+#[tauri::command]
+fn is_monitoring_paused() -> Result<bool, String> {
+    Ok(clipboard::is_monitoring_paused())
+}
+
+#[tauri::command]
+fn set_monitoring_paused(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    paused: bool,
+) -> Result<(), String> {
+    clipboard::set_monitoring_paused(paused);
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    store
+        .set_setting("monitoring_paused", if paused { "true" } else { "false" })
+        .map_err(|error| format!("could not save setting: {error}"))?;
+    let _ = app.emit("clipboard://monitoring-paused-changed", paused);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_privacy_settings(state: tauri::State<'_, AppState>) -> Result<PrivacySettings, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+    let monitoring_paused = clipboard::is_monitoring_paused();
+    let ignore_password_managers = store
+        .get_setting("ignore_password_managers")
+        .ok()
+        .flatten()
+        .as_deref()
+        != Some("false");
+    let excluded_json = store
+        .get_setting("excluded_applications")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "[]".into());
+    let excluded_applications: Vec<String> =
+        serde_json::from_str(&excluded_json).unwrap_or_default();
+    let duplicate_handling = store
+        .get_setting("duplicate_handling")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "bump".into());
+
+    Ok(PrivacySettings {
+        monitoring_paused,
+        ignore_password_managers,
+        excluded_applications,
+        duplicate_handling,
+    })
+}
+
+#[tauri::command]
+fn set_privacy_settings(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    settings: PrivacySettings,
+) -> Result<(), String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+    clipboard::set_monitoring_paused(settings.monitoring_paused);
+    clipboard::update_privacy_config(
+        settings.ignore_password_managers,
+        settings.excluded_applications.clone(),
+    );
+    clipboard::update_duplicate_handling(settings.duplicate_handling.clone());
+
+    store
+        .set_setting(
+            "monitoring_paused",
+            if settings.monitoring_paused {
+                "true"
+            } else {
+                "false"
+            },
+        )
+        .map_err(|e| format!("could not save monitoring_paused: {e}"))?;
+
+    store
+        .set_setting(
+            "ignore_password_managers",
+            if settings.ignore_password_managers {
+                "true"
+            } else {
+                "false"
+            },
+        )
+        .map_err(|e| format!("could not save ignore_password_managers: {e}"))?;
+
+    let excluded_json = serde_json::to_string(&settings.excluded_applications)
+        .map_err(|e| format!("could not serialize excluded applications: {e}"))?;
+    store
+        .set_setting("excluded_applications", &excluded_json)
+        .map_err(|e| format!("could not save excluded_applications: {e}"))?;
+
+    store
+        .set_setting("duplicate_handling", &settings.duplicate_handling)
+        .map_err(|e| format!("could not save duplicate_handling: {e}"))?;
+
+    let _ = app.emit("clipboard://monitoring-paused-changed", settings.monitoring_paused);
+
+    Ok(())
+}
+
+#[tauri::command]
+fn get_shortcut_settings(state: tauri::State<'_, AppState>) -> Result<ShortcutSettings, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+    if let Ok(Some(json)) = store.get_setting("keyboard_shortcuts") {
+        if let Ok(settings) = serde_json::from_str::<ShortcutSettings>(&json) {
+            return Ok(settings);
+        }
+    }
+
+    Ok(ShortcutSettings::default())
+}
+
+#[tauri::command]
+fn set_shortcut_settings(
+    state: tauri::State<'_, AppState>,
+    settings: ShortcutSettings,
+) -> Result<(), String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+    let json = serde_json::to_string(&settings)
+        .map_err(|e| format!("could not serialize shortcut settings: {e}"))?;
+
+    store
+        .set_setting("keyboard_shortcuts", &json)
+        .map_err(|e| format!("could not save keyboard shortcuts: {e}"))
+}
+
+#[tauri::command]
+fn reset_shortcut_settings(state: tauri::State<'_, AppState>) -> Result<ShortcutSettings, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+    let defaults = ShortcutSettings::default();
+    let json = serde_json::to_string(&defaults)
+        .map_err(|e| format!("could not serialize default shortcuts: {e}"))?;
+
+    store
+        .set_setting("keyboard_shortcuts", &json)
+        .map_err(|e| format!("could not reset keyboard shortcuts: {e}"))?;
+
+    Ok(defaults)
+}
+
+// ----------
 // Native Clipboard Copy Command
 // Description: Writes text to the OS clipboard directly using arboard, ensuring copy actions from Clipbox cards succeed without browser focus limitations.
 // ----------
@@ -538,9 +807,10 @@ pub fn run() {
             // Setup system tray menu and icon
             let show_item = tauri::menu::MenuItem::with_id(app, "show", "Show Clipbox", true, None::<&str>)?;
             let hide_item = tauri::menu::MenuItem::with_id(app, "hide", "Hide to Tray", true, None::<&str>)?;
+            let pause_item = tauri::menu::MenuItem::with_id(app, "toggle_pause", "Pause / Resume Monitoring", true, None::<&str>)?;
             let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
             let quit_item = tauri::menu::MenuItem::with_id(app, "quit", "Quit Clipbox", true, None::<&str>)?;
-            let tray_menu = tauri::menu::Menu::with_items(app, &[&show_item, &hide_item, &separator, &quit_item])?;
+            let tray_menu = tauri::menu::Menu::with_items(app, &[&show_item, &hide_item, &pause_item, &separator, &quit_item])?;
 
             let mut tray_builder = tauri::tray::TrayIconBuilder::new()
                 .tooltip("Clipbox")
@@ -558,6 +828,16 @@ pub fn run() {
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.hide();
                         }
+                    }
+                    "toggle_pause" => {
+                        let new_state = !clipboard::is_monitoring_paused();
+                        clipboard::set_monitoring_paused(new_state);
+                        if let Some(state) = app.try_state::<AppState>() {
+                            if let Ok(store) = ClipboardStore::open(&state.database_path) {
+                                let _ = store.set_setting("monitoring_paused", if new_state { "true" } else { "false" });
+                            }
+                        }
+                        let _ = app.emit("clipboard://monitoring-paused-changed", new_state);
                     }
                     "quit" => {
                         app.exit(0);
@@ -648,6 +928,13 @@ pub fn run() {
             save_image_to_file,
             copy_files_to_clipboard,
             open_in_explorer,
+            is_monitoring_paused,
+            set_monitoring_paused,
+            get_privacy_settings,
+            set_privacy_settings,
+            get_shortcut_settings,
+            set_shortcut_settings,
+            reset_shortcut_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clipbox");

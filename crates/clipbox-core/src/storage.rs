@@ -274,7 +274,7 @@ impl ClipboardStore {
         let mut statement = self.connection.prepare(
             "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data
              FROM clipboard_entries
-             ORDER BY is_pinned DESC, id DESC
+             ORDER BY is_pinned DESC, copied_at DESC, id DESC
              LIMIT ?1",
         )?;
         let entries = statement.query_map(params![i64::from(limit)], |row| {
@@ -296,6 +296,107 @@ impl ClipboardStore {
         })?;
 
         entries.collect()
+    }
+
+    /// Return a single stored entry by its ID.
+    pub fn get_entry(&self, id: i64) -> Result<Option<ClipboardEntry>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data
+             FROM clipboard_entries
+             WHERE id = ?1",
+        )?;
+        let mut rows = statement.query_map(params![id], |row| {
+            let is_pinned_int: i32 = row.get(7)?;
+            Ok(ClipboardEntry {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                copied_at: row.get(2)?,
+                source_app: row.get(3)?,
+                source_process: row.get(4)?,
+                window_title: row.get(5)?,
+                app_icon: row.get(6)?,
+                is_pinned: is_pinned_int != 0,
+                entry_type: row.get(8).unwrap_or_else(|_| "text".into()),
+                image_data: row.get(9)?,
+                image_dimensions: row.get(10)?,
+                files_data: row.get(11)?,
+            })
+        })?;
+
+        if let Some(entry) = rows.next() {
+            Ok(Some(entry?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // ----------
+    // Duplicate Entry Detection & Timestamp Bump
+    // Description: Queries existing entries matching text, image, or files payload and bumps their copied_at timestamp to bring them to the top of the history feed without duplicate clutter.
+    // ----------
+
+    pub fn find_existing_text(&self, content: &str) -> Result<Option<i64>> {
+        let cleaned = strip_leading_empty_lines(content);
+        let mut statement = self.connection.prepare(
+            "SELECT id FROM clipboard_entries WHERE entry_type = 'text' AND content = ?1 ORDER BY id DESC LIMIT 1",
+        )?;
+        let mut rows = statement.query([cleaned])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn find_existing_image(&self, data_url: &str) -> Result<Option<i64>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id FROM clipboard_entries WHERE entry_type = 'image' AND image_data = ?1 ORDER BY id DESC LIMIT 1",
+        )?;
+        let mut rows = statement.query([data_url])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn find_existing_file(&self, files_json: &str) -> Result<Option<i64>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id FROM clipboard_entries WHERE entry_type = 'file' AND files_data = ?1 ORDER BY id DESC LIMIT 1",
+        )?;
+        let mut rows = statement.query([files_json])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn bump_entry(&self, id: i64, metadata: &ClipboardMetadata) -> Result<()> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        self.connection.execute(
+            "UPDATE clipboard_entries
+             SET copied_at = MAX(?1, (SELECT COALESCE(MAX(copied_at), 0) FROM clipboard_entries) + 1),
+                 source_app = COALESCE(?2, source_app),
+                 source_process = COALESCE(?3, source_process),
+                 window_title = COALESCE(?4, window_title),
+                 app_icon = COALESCE(?5, app_icon)
+             WHERE id = ?6",
+            params![
+                now,
+                metadata.source_app.as_deref(),
+                metadata.source_process.as_deref(),
+                metadata.window_title.as_deref(),
+                metadata.app_icon.as_deref(),
+                id,
+            ],
+        )?;
+
+        Ok(())
     }
 
     // ----------
@@ -715,5 +816,34 @@ mod tests {
         assert_eq!(entries[0].content, "test.txt (128 B)");
         assert_eq!(entries[0].files_data.as_deref(), Some(fake_json));
         assert_eq!(entries[0].source_app.as_deref(), Some("File Explorer"));
+    }
+
+    #[test]
+    fn finds_existing_entry_and_bumps_timestamp() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        let id1 = store.add_text("First item").unwrap();
+        let _id2 = store.add_text("Second item").unwrap();
+
+        // Finding existing text
+        let found = store.find_existing_text("First item").unwrap();
+        assert_eq!(found, Some(id1));
+
+        let not_found = store.find_existing_text("Nonexistent").unwrap();
+        assert_eq!(not_found, None);
+
+        // Bump id1
+        let meta = ClipboardMetadata {
+            source_app: Some("Updated App".into()),
+            ..Default::default()
+        };
+        store.bump_entry(id1, &meta).unwrap();
+
+        let updated = store.get_entry(id1).unwrap().unwrap();
+        assert_eq!(updated.source_app.as_deref(), Some("Updated App"));
+
+        // When listing recent entries, the bumped entry appears first
+        let entries = store.recent_entries(10).unwrap();
+        assert_eq!(entries[0].id, id1);
+        assert_eq!(entries[0].content, "First item");
     }
 }
