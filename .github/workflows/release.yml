@@ -1,0 +1,67 @@
+name: Release installer
+
+# Builds the Windows installer only when the app version actually increases.
+# Normal PRs onto main that touch other files never trigger this workflow:
+# the path filter below limits runs to version-carrying files, and the
+# check-version job skips the build unless package.json's version changed.
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+      - package-lock.json
+      - src-tauri/tauri.conf.json
+      - src-tauri/Cargo.toml
+      - crates/clipbox-core/Cargo.toml
+      - Cargo.lock
+
+jobs:
+  check-version:
+    name: Check for version bump
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare package.json version against previous push
+        id: check
+        run: |
+          current=$(node -p "require('./package.json').version")
+          previous=$(git show ${{ github.event.before }}:package.json 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version" || echo "")
+          echo "version=$current" >> "$GITHUB_OUTPUT"
+          if [ -n "$previous" ] && [ "$current" = "$previous" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Version unchanged ($current), skipping build."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Version changed ($previous -> $current), building."
+          fi
+
+  build:
+    name: Build Windows installer
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app and NSIS installer
+        uses: tauri-apps/tauri-action@v0
