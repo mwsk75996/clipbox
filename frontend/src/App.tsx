@@ -17,6 +17,7 @@ import {
   Trash2,
   Pin,
   Image as ImageIcon,
+  Camera,
 } from "lucide-react";
 import { startOfDay, endOfDay } from "date-fns";
 import type { DateRange } from "react-day-picker";
@@ -558,42 +559,81 @@ export default function App() {
                               Pinned
                             </span>
                           )}
-                          {entry.entryType === "image" && (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 select-none">
-                              <ImageIcon className="size-2.5" />
-                              Image
-                            </span>
-                          )}
-                          <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                            {entry.appIcon ? (
-                              <img
-                                src={entry.appIcon}
-                                alt={appName}
-                                width={16}
-                                height={16}
-                                className="size-4 object-contain rounded-sm select-none pointer-events-none shrink-0"
-                              />
-                            ) : (
-                              <span className="size-4 rounded bg-muted border flex items-center justify-center text-[9px] font-semibold text-muted-foreground uppercase shrink-0 select-none">
-                                {appName.charAt(0)}
-                              </span>
-                            )}
-                            <span>{appName}</span>
-                          </div>
-                          {entry.windowTitle &&
-                            entry.windowTitle.toLowerCase() !==
-                              appName.toLowerCase() && (
-                              <>
-                                <span className="text-xs text-muted-foreground">·</span>
-                                <span className="text-xs text-muted-foreground truncate max-w-[240px]">
-                                  {entry.windowTitle}
+                          {entry.entryType === "image" ? (
+                            <>
+                              {appName.toLowerCase().includes("screen capture") ||
+                              appName.toLowerCase().includes("screenshot") ? (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 select-none">
+                                  <Camera className="size-2.5" />
+                                  Screen Capture
                                 </span>
-                              </>
-                            )}
-                          <span className="text-xs text-muted-foreground">·</span>
-                          <CardDescription className="text-xs">
-                            {formatTimestamp(entry.copiedAt)}
-                          </CardDescription>
+                              ) : (
+                                <>
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 select-none">
+                                    <ImageIcon className="size-2.5" />
+                                    Image
+                                  </span>
+                                  <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                                    {entry.appIcon ? (
+                                      <img
+                                        src={entry.appIcon}
+                                        alt={appName}
+                                        width={16}
+                                        height={16}
+                                        className="size-4 object-contain rounded-sm select-none pointer-events-none shrink-0"
+                                      />
+                                    ) : (
+                                      <span className="size-4 rounded bg-muted border flex items-center justify-center text-[9px] font-semibold text-muted-foreground uppercase shrink-0 select-none">
+                                        {appName.charAt(0)}
+                                      </span>
+                                    )}
+                                    <span>{appName}</span>
+                                  </div>
+                                  <span className="text-xs text-muted-foreground">·</span>
+                                  <span className="text-xs text-muted-foreground">
+                                    {entry.windowTitle || "Copied Image"}
+                                  </span>
+                                </>
+                              )}
+                              <span className="text-xs text-muted-foreground">·</span>
+                              <CardDescription className="text-xs">
+                                {formatTimestamp(entry.copiedAt)}
+                              </CardDescription>
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                                {entry.appIcon ? (
+                                  <img
+                                    src={entry.appIcon}
+                                    alt={appName}
+                                    width={16}
+                                    height={16}
+                                    className="size-4 object-contain rounded-sm select-none pointer-events-none shrink-0"
+                                  />
+                                ) : (
+                                  <span className="size-4 rounded bg-muted border flex items-center justify-center text-[9px] font-semibold text-muted-foreground uppercase shrink-0 select-none">
+                                    {appName.charAt(0)}
+                                  </span>
+                                )}
+                                <span>{appName}</span>
+                              </div>
+                              {entry.windowTitle &&
+                                entry.windowTitle.toLowerCase() !==
+                                  appName.toLowerCase() && (
+                                  <>
+                                    <span className="text-xs text-muted-foreground">·</span>
+                                    <span className="text-xs text-muted-foreground truncate max-w-[240px]">
+                                      {entry.windowTitle}
+                                    </span>
+                                  </>
+                                )}
+                              <span className="text-xs text-muted-foreground">·</span>
+                              <CardDescription className="text-xs">
+                                {formatTimestamp(entry.copiedAt)}
+                              </CardDescription>
+                            </>
+                          )}
                         </div>
 
                         <div className="flex items-center gap-1 shrink-0">

@@ -83,14 +83,27 @@ fn monitor(database_path: PathBuf, app: tauri::AppHandle) {
 
                 if !is_internal_copy {
                     let mut metadata = source::current();
-                    // If Clipbox happened to be focused when taking a screenshot, attribute nicely
-                    if metadata
+
+                    let is_known_screenshot_tool = metadata
                         .source_process
                         .as_deref()
-                        .is_some_and(|proc| proc.eq_ignore_ascii_case("clipbox.exe"))
-                    {
-                        metadata.source_app = Some("Screenshot".into());
-                        metadata.window_title = Some("Screen Capture".into());
+                        .is_some_and(|proc| {
+                            proc.eq_ignore_ascii_case("ScreenClippingHost.exe")
+                                || proc.eq_ignore_ascii_case("SnippingTool.exe")
+                                || proc.eq_ignore_ascii_case("ShellExperienceHost.exe")
+                                || proc.eq_ignore_ascii_case("clipbox.exe")
+                        });
+
+                    let is_screen_capture = !img.is_copied_image || is_known_screenshot_tool;
+
+                    if is_screen_capture {
+                        metadata.source_app = Some("Screen Capture".into());
+                        metadata.source_process = None;
+                        metadata.window_title = None;
+                        metadata.app_icon = None;
+                    } else {
+                        // User explicitly right-clicked "Copy Image" in an application (Brave, Discord, etc.)
+                        metadata.window_title = Some("Copied Image".into());
                     }
 
                     match store.add_image_entry(&img.data_url, &img.dimensions, &metadata) {
