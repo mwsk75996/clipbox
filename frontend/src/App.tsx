@@ -579,8 +579,10 @@ export default function App() {
           showToast("Restored to history");
         }
       }
-      fetchEntries();
-      fetchDeletedEntries();
+      // Awaited so the card holds "Restoring..." until the lists actually
+      // commit; otherwise the spinner stops first and the row lingers while
+      // the (potentially image-heavy) refetch is still in flight.
+      await Promise.all([fetchEntries(), fetchDeletedEntries()]);
     } catch (err) {
       console.error("Failed to restore entry", err);
       showToast("Restore failed", "error");
