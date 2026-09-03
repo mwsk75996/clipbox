@@ -4,7 +4,7 @@
 // ----------
 
 import * as React from "react";
-import { Files, History, Image as ImageIcon, Trash2 } from "lucide-react";
+import { Files, History, Image as ImageIcon, Loader2, Timer, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import {
@@ -16,14 +16,56 @@ import {
 
 interface DeletedEntryCardProps {
   entry: DeletedClipboardEntry;
-  onRestore: (id: number) => void;
+  retention: string | null;
+  onRestore: (id: number) => void | Promise<void>;
   onDeleteForever: (id: number, event?: React.MouseEvent) => void;
 }
 
-export function DeletedEntryCard({ entry, onRestore, onDeleteForever }: DeletedEntryCardProps) {
+// Mirrors deleted_retention_lifetime_seconds in clipbox-core.
+const RETENTION_LIFETIME_SECONDS: Record<string, number> = {
+  "1hour": 3_600,
+  "1day": 86_400,
+  "7days": 7 * 86_400,
+  "30days": 30 * 86_400,
+};
+
+function formatExpiry(deletedAt: number, retention: string | null): string | null {
+  if (!retention || retention === "immediately") return null;
+  const lifetime = RETENTION_LIFETIME_SECONDS[retention];
+  if (!lifetime) return null;
+
+  const remaining = deletedAt + lifetime - Math.floor(Date.now() / 1000);
+  if (remaining <= 0) return "Purging soon";
+  const minutes = Math.floor(remaining / 60);
+  if (minutes < 1) return "Less than a minute left";
+  if (minutes < 60) return `${minutes} min left`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    const mins = minutes % 60;
+    return mins === 0 ? `${hours} hr left` : `${hours} hr ${mins} min left`;
+  }
+  const days = Math.floor(hours / 24);
+  const hrs = hours % 24;
+  if (hrs === 0) return `${days} day${days === 1 ? "" : "s"} left`;
+  return `${days}d ${hrs}h left`;
+}
+
+export function DeletedEntryCard({ entry, retention, onRestore, onDeleteForever }: DeletedEntryCardProps) {
+  const [restoring, setRestoring] = React.useState(false);
   const appName = sourceLabel(entry);
   const snippet =
     entry.entryType === "text" ? stripLeadingEmptyLines(entry.content).slice(0, 280) : null;
+  const expiry = formatExpiry(entry.deletedAt, retention);
+
+  const handleRestore = async () => {
+    if (restoring) return;
+    setRestoring(true);
+    try {
+      await onRestore(entry.id);
+    } finally {
+      setRestoring(false);
+    }
+  };
 
   return (
     <Card className="transition-all border shadow-sm opacity-90">
@@ -50,22 +92,37 @@ export function DeletedEntryCard({ entry, onRestore, onDeleteForever }: DeletedE
           <CardDescription className="text-xs whitespace-nowrap">
             Deleted {formatTimestamp(entry.deletedAt)}
           </CardDescription>
+          {expiry && (
+            <>
+              <span className="text-xs text-muted-foreground shrink-0">·</span>
+              <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600 dark:text-amber-400 whitespace-nowrap">
+                <Timer className="size-3" />
+                {expiry}
+              </span>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <Button
             variant="outline"
             size="sm"
-            onClick={() => onRestore(entry.id)}
+            onClick={handleRestore}
+            disabled={restoring}
             title="Restore to history"
             className="h-7 gap-1.5 text-xs"
           >
-            <History className="size-3.5" />
-            <span>Restore</span>
+            {restoring ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <History className="size-3.5" />
+            )}
+            <span>{restoring ? "Restoring..." : "Restore"}</span>
           </Button>
           <Button
             variant="ghost"
             size="sm"
             onClick={(e) => onDeleteForever(entry.id, e)}
+            disabled={restoring}
             title="Delete forever"
             className="h-7 gap-1.5 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
           >

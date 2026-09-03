@@ -22,6 +22,7 @@ import {
   Files,
   PauseCircle,
   ExternalLink,
+  TriangleAlert,
 } from "lucide-react";
 import { startOfDay, endOfDay } from "date-fns";
 import type { DateRange } from "react-day-picker";
@@ -98,6 +99,15 @@ export interface DeletedClipboardEntry {
 // Real-time clipboard events keep the visible feed updated, so a focus that
 // closely follows any fetch skips the reload instead of rerendering everything.
 const FOCUS_REFETCH_MIN_INTERVAL_MS = 30_000;
+
+// Display labels for the deleted_retention setting values.
+const TRASH_RETENTION_LABELS: Record<string, string> = {
+  immediately: "Immediately",
+  "1hour": "1 hour",
+  "1day": "1 day",
+  "7days": "7 days",
+  "30days": "30 days",
+};
 
 const PREVIEW_ENTRIES: ClipboardEntry[] = [
   {
@@ -190,6 +200,7 @@ export default function App() {
   const [previewEntry, setPreviewEntry] = React.useState<ClipboardEntry | null>(null);
   const [showDeleted, setShowDeleted] = React.useState(false);
   const [deletedEntries, setDeletedEntries] = React.useState<DeletedClipboardEntry[]>([]);
+  const [trashRetention, setTrashRetention] = React.useState<string | null>(null);
 
   // Keyboard shortcuts and privacy monitoring state
   const [shortcuts, setShortcuts] = React.useState<ShortcutSettings>(DEFAULT_SHORTCUTS);
@@ -498,6 +509,19 @@ export default function App() {
     }
   }, []);
 
+  const fetchTrashRetention = React.useCallback(async () => {
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        setTrashRetention(await invoke<string>("get_deleted_retention"));
+      } else {
+        setTrashRetention(null);
+      }
+    } catch (err) {
+      console.error("Failed to fetch deleted retention:", err);
+      setTrashRetention(null);
+    }
+  }, []);
+
   const handleRestoreDeleted = async (id: number) => {
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
@@ -536,6 +560,7 @@ export default function App() {
     setFocusedIndex(null);
     setShowDeleted(true);
     fetchDeletedEntries();
+    fetchTrashRetention();
   };
 
   // Reset keyboard focus when search or filters change
@@ -931,6 +956,16 @@ export default function App() {
                       <h3 className="text-sm font-semibold flex items-center gap-1.5">
                         <Trash2 className="size-4" />
                         Recently Deleted
+                        {trashRetention === "immediately" ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                            <TriangleAlert className="size-3" />
+                            Instant deletion on
+                          </span>
+                        ) : trashRetention ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-muted text-muted-foreground border">
+                            Auto-purge: {TRASH_RETENTION_LABELS[trashRetention] ?? trashRetention}
+                          </span>
+                        ) : null}
                       </h3>
                       <p className="text-xs text-muted-foreground mt-0.5">
                         Restore clips before they are permanently purged.
@@ -948,15 +983,37 @@ export default function App() {
                   </div>
                   {deletedEntries.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-16 text-center">
-                      <p className="text-sm text-muted-foreground max-w-sm">
-                        Nothing here. Deleted clips stay restorable until the retention timespan passes.
-                      </p>
+                      {trashRetention === "immediately" ? (
+                        <>
+                          <span className="size-12 rounded-full bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+                            <TriangleAlert className="size-6 text-amber-500" />
+                          </span>
+                          <h4 className="text-sm font-semibold mt-4">Instant deletion is on</h4>
+                          <p className="text-xs text-muted-foreground max-w-xs mt-1">
+                            Deleted clips are purged immediately and can&apos;t be restored.
+                            Change this in Settings, under Storage &amp; Database.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <span className="size-12 rounded-full bg-muted border flex items-center justify-center">
+                            <Trash2 className="size-6 text-muted-foreground" />
+                          </span>
+                          <h4 className="text-sm font-semibold mt-4">Trash is empty</h4>
+                          <p className="text-xs text-muted-foreground max-w-xs mt-1">
+                            {trashRetention && TRASH_RETENTION_LABELS[trashRetention]
+                              ? `Deleted clips stay here for ${TRASH_RETENTION_LABELS[trashRetention].toLowerCase()} before permanent purge.`
+                              : "Deleted clips stay here until the retention timespan passes."}
+                          </p>
+                        </>
+                      )}
                     </div>
                   ) : (
                     deletedEntries.map((entry) => (
                       <DeletedEntryCard
                         key={entry.id}
                         entry={entry}
+                        retention={trashRetention}
                         onRestore={handleRestoreDeleted}
                         onDeleteForever={handleDeleteForever}
                       />
