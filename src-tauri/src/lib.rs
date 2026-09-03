@@ -326,7 +326,7 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
 
 // ----------
 // Native Image Clipboard Copy Command
-// Description: Decodes a PNG image data URL and writes raw RGBA bitmap pixels directly to the OS clipboard via arboard.
+// Description: Decodes a PNG image data URL and writes standard Windows CF_DIB (Format 8) and registered "PNG" format directly to the OS clipboard, enabling pasting into Paint, Discord, web browsers, and chat apps.
 // ----------
 
 #[tauri::command]
@@ -343,25 +343,10 @@ fn copy_image_to_clipboard(data_url: String) -> Result<(), String> {
         .decode(base64_str)
         .map_err(|e| format!("failed to decode base64 image data: {e}"))?;
 
-    let img = image::load_from_memory(&png_bytes)
-        .map_err(|e| format!("failed to load image from memory: {e}"))?
-        .to_rgba8();
-
-    let width = img.width() as usize;
-    let height = img.height() as usize;
-    let bytes = img.into_raw();
-
-    let sample_hash = image_clipboard::compute_bytes_hash(&bytes);
+    let sample_hash = image_clipboard::compute_bytes_hash(&png_bytes);
     clipboard::mark_internal_copy_image(sample_hash);
 
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    clipboard
-        .set_image(arboard::ImageData {
-            width,
-            height,
-            bytes: std::borrow::Cow::Owned(bytes),
-        })
-        .map_err(|e| e.to_string())
+    image_clipboard::write_clipboard_image(&png_bytes)
 }
 
 // ----------
