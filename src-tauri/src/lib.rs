@@ -350,6 +350,80 @@ fn copy_image_to_clipboard(data_url: String) -> Result<(), String> {
 }
 
 // ----------
+// Native Image Save Dialog Command
+// Description: Decodes PNG data URL and displays standard Windows Save As dialog with .png filter, writing image bytes directly to the chosen local disk path.
+// ----------
+
+#[tauri::command]
+fn save_image_to_file(
+    window: tauri::Window,
+    data_url: String,
+    default_filename: String,
+) -> Result<Option<String>, String> {
+    let base64_str = if let Some(idx) = data_url.find(',') {
+        &data_url[idx + 1..]
+    } else {
+        &data_url
+    };
+
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    let png_bytes = STANDARD
+        .decode(base64_str)
+        .map_err(|e| format!("failed to decode base64 image data: {e}"))?;
+
+    #[cfg(windows)]
+    {
+        use windows::core::{w, PWSTR};
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Controls::Dialogs::{
+            GetSaveFileNameW, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+        };
+
+        let hwnd = match window.hwnd() {
+            Ok(h) => HWND(h.0 as _),
+            Err(_) => HWND(std::ptr::null_mut()),
+        };
+
+        let mut file_buf = [0u16; 1024];
+        let default_name_utf16: Vec<u16> = default_filename.encode_utf16().collect();
+        let copy_len = default_name_utf16.len().min(file_buf.len() - 1);
+        file_buf[..copy_len].copy_from_slice(&default_name_utf16[..copy_len]);
+
+        let filter = w!("PNG Image (*.png)\0*.png\0All Files (*.*)\0*.*\0\0");
+
+        let mut ofn = OPENFILENAMEW {
+            lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+            hwndOwner: hwnd,
+            lpstrFilter: filter,
+            lpstrFile: PWSTR(file_buf.as_mut_ptr()),
+            nMaxFile: file_buf.len() as u32,
+            lpstrDefExt: w!("png"),
+            Flags: OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,
+            ..Default::default()
+        };
+
+        let success = unsafe { GetSaveFileNameW(&mut ofn) }.as_bool();
+        if !success {
+            return Ok(None);
+        }
+
+        let end = file_buf.iter().position(|&c| c == 0).unwrap_or(file_buf.len());
+        let selected_path = String::from_utf16_lossy(&file_buf[..end]);
+
+        std::fs::write(&selected_path, &png_bytes)
+            .map_err(|e| format!("failed to save image to {selected_path}: {e}"))?;
+
+        Ok(Some(selected_path))
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err("Save dialog is currently supported on Windows".into())
+    }
+}
+
+// ----------
 // Application Restart Command
 // Description: Restarts the Clipbox application process cleanly via Tauri AppHandle.
 // ----------
@@ -488,7 +562,8 @@ pub fn run() {
             open_database_directory,
             get_retention_limit,
             set_retention_limit,
-            restart_app
+            restart_app,
+            save_image_to_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clipbox");
