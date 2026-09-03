@@ -953,9 +953,11 @@ export function ImageAnnotator({
         {activeTool === "crop" ? (
           /* Dedicated Crop Controls Bar */
           <div className="flex items-center gap-2 shrink-0">
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-sky-500/15 text-sky-400 border border-sky-500/30 text-xs font-semibold select-none">
-              <Crop className="size-3.5" />
-              <span>Crop</span>
+            <div
+              className="size-8 rounded-md bg-sky-500/15 text-sky-400 border border-sky-500/30 flex items-center justify-center select-none"
+              title="Crop Mode"
+            >
+              <Crop className="size-4" />
             </div>
 
             <div className="flex items-center gap-0.5 bg-muted/60 p-0.5 rounded-lg border">
@@ -989,24 +991,22 @@ export function ImageAnnotator({
 
             <Button
               variant="default"
-              size="sm"
+              size="icon"
               onClick={handleApplyCrop}
-              className="h-8 gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-medium shadow-sm"
-              title="Apply crop"
+              className="size-8 bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs"
+              title="Apply Crop"
             >
-              <Check className="size-3.5" />
-              <span>Apply</span>
+              <Check className="size-4" />
             </Button>
 
             <Button
               variant="outline"
-              size="sm"
+              size="icon"
               onClick={handleCancelCrop}
-              className="h-8 gap-1.5 text-xs font-medium"
-              title="Cancel crop"
+              className="size-8"
+              title="Cancel Crop"
             >
-              <X className="size-3.5" />
-              <span>Cancel</span>
+              <X className="size-4" />
             </Button>
           </div>
         ) : (
