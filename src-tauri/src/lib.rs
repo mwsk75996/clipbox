@@ -265,8 +265,10 @@ fn get_database_path(state: tauri::State<'_, AppState>) -> Result<String, String
 fn open_database_directory(state: tauri::State<'_, AppState>) -> Result<(), String> {
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        let clean_path = state.database_path.to_string_lossy().replace('/', "\\");
         std::process::Command::new("explorer")
-            .arg(format!("/select,\"{}\"", state.database_path.display()))
+            .raw_arg(format!("/select,\"{clean_path}\""))
             .spawn()
             .map_err(|e| format!("could not open explorer: {e}"))?;
         Ok(())
@@ -287,21 +289,23 @@ fn open_database_directory(state: tauri::State<'_, AppState>) -> Result<(), Stri
 
 #[tauri::command]
 fn open_in_explorer(path: String) -> Result<(), String> {
-    let p = std::path::Path::new(&path);
+    let clean_path = path.replace('/', "\\");
+    let p = std::path::PathBuf::from(&clean_path);
     if !p.exists() {
         return Err("File or folder does not exist on disk".into());
     }
 
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
         if p.is_dir() {
             std::process::Command::new("explorer")
-                .arg(&path)
+                .raw_arg(format!("\"{clean_path}\""))
                 .spawn()
                 .map_err(|e| format!("could not open explorer: {e}"))?;
         } else {
             std::process::Command::new("explorer")
-                .arg(format!("/select,\"{path}\""))
+                .raw_arg(format!("/select,\"{clean_path}\""))
                 .spawn()
                 .map_err(|e| format!("could not open explorer: {e}"))?;
         }
@@ -310,7 +314,11 @@ fn open_in_explorer(path: String) -> Result<(), String> {
 
     #[cfg(not(windows))]
     {
-        let target = if p.is_dir() { p } else { p.parent().unwrap_or(p) };
+        let target = if p.is_dir() {
+            p
+        } else {
+            p.parent().map(|parent| parent.to_path_buf()).unwrap_or(p)
+        };
         let _ = std::process::Command::new("xdg-open").arg(target).spawn();
         Ok(())
     }

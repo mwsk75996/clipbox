@@ -469,14 +469,11 @@ export default function App() {
         return;
       }
 
-      // Enter: Copy focused entry and hide window to tray
+      // Enter: Copy focused entry
       if (event.key === "Enter" && focusedIndex !== null && filteredEntries[focusedIndex]) {
         event.preventDefault();
         const targetEntry = filteredEntries[focusedIndex];
         handleCopy(targetEntry);
-        if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-          invoke("hide_window").catch(console.error);
-        }
         return;
       }
 
