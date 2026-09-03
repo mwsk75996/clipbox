@@ -136,9 +136,4 @@
     -ms-overflow-style: none !important;
     scrollbar-width: none !important;
   }
-
-  .fade-bottom-mask {
-    mask-image: linear-gradient(to bottom, black calc(100% - 64px), transparent 100%);
-    -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 64px), transparent 100%);
-  }
 }
