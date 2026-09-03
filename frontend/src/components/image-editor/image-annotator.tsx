@@ -98,6 +98,7 @@ export function ImageAnnotator({
   // Crop Box state
   const [cropBox, setCropBox] = React.useState<CropBox | null>(null);
   const [activeDragHandle, setActiveDragHandle] = React.useState<string | null>(null);
+  const [hoverCropHandle, setHoverCropHandle] = React.useState<string | null>(null);
   const dragStartPointRef = React.useRef<Point | null>(null);
   const cropBoxStartRef = React.useRef<CropBox | null>(null);
 
@@ -311,8 +312,10 @@ export function ImageAnnotator({
     setActiveTool("pen");
   };
 
-  // Convert mouse/touch event coordinates into native image coordinates
-  const getCanvasCoords = (e: React.MouseEvent<HTMLCanvasElement>): Point => {
+  // Convert pointer event coordinates into native image coordinates
+  const getCanvasCoords = (
+    e: React.PointerEvent<HTMLCanvasElement> | React.MouseEvent<HTMLCanvasElement>
+  ): Point => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
@@ -322,6 +325,21 @@ export function ImageAnnotator({
       x: (e.clientX - rect.left) * scaleX,
       y: (e.clientY - rect.top) * scaleY,
     };
+  };
+
+  // Determine dynamic cursor style based on active tool and crop handle hovering/dragging
+  const getCanvasCursor = (): string => {
+    if (activeTool === "crop") {
+      const handle = activeDragHandle || hoverCropHandle;
+      if (handle === "nw" || handle === "se") return "nwse-resize";
+      if (handle === "ne" || handle === "sw") return "nesw-resize";
+      if (handle === "n" || handle === "s") return "ns-resize";
+      if (handle === "w" || handle === "e") return "ew-resize";
+      if (handle === "move") return "move";
+      return "default";
+    }
+    if (activeTool === "eraser") return "cell";
+    return "crosshair";
   };
 
   // Render loop: draws base image, annotations, in-progress shapes/strokes, and crop overlay
@@ -671,8 +689,8 @@ export function ImageAnnotator({
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // 3. Draw 8 corner & edge handles
-    const handleSize = 10;
+    // 3. Draw 8 corner & edge handles with drop shadow
+    const handleRadius = 6;
     const handles = [
       { x: box.x, y: box.y }, // nw
       { x: box.x + box.width / 2, y: box.y }, // n
@@ -684,31 +702,65 @@ export function ImageAnnotator({
       { x: box.x, y: box.y + box.height / 2 }, // w
     ];
 
+    ctx.save();
+    ctx.shadowColor = "rgba(0, 0, 0, 0.5)";
+    ctx.shadowBlur = 4;
     ctx.fillStyle = "#ffffff";
     ctx.strokeStyle = "#0284c7";
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 2.5;
 
     for (const h of handles) {
       ctx.beginPath();
-      ctx.arc(h.x, h.y, handleSize / 2, 0, Math.PI * 2);
+      ctx.arc(h.x, h.y, handleRadius, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
     }
+    ctx.restore();
 
     ctx.restore();
   }
 
+  // Enhanced crop handle & full edge hit-testing
+  function getCropHandleAt(pt: Point, box: CropBox): string | null {
+    // 1. Corner handles first (with generous 22px radius)
+    const cornerR = 22;
+    if (Math.hypot(pt.x - box.x, pt.y - box.y) <= cornerR) return "nw";
+    if (Math.hypot(pt.x - (box.x + box.width), pt.y - box.y) <= cornerR) return "ne";
+    if (Math.hypot(pt.x - (box.x + box.width), pt.y - (box.y + box.height)) <= cornerR) return "se";
+    if (Math.hypot(pt.x - box.x, pt.y - (box.y + box.height)) <= cornerR) return "sw";
+
+    // 2. Full Edges with generous tolerance (18px)
+    const edgeTolerance = 18;
+    const isWithinX = pt.x >= box.x - edgeTolerance && pt.x <= box.x + box.width + edgeTolerance;
+    const isWithinY = pt.y >= box.y - edgeTolerance && pt.y <= box.y + box.height + edgeTolerance;
+
+    if (isWithinX) {
+      if (Math.abs(pt.y - box.y) <= edgeTolerance) return "n";
+      if (Math.abs(pt.y - (box.y + box.height)) <= edgeTolerance) return "s";
+    }
+
+    if (isWithinY) {
+      if (Math.abs(pt.x - box.x) <= edgeTolerance) return "w";
+      if (Math.abs(pt.x - (box.x + box.width)) <= edgeTolerance) return "e";
+    }
+
+    return null;
+  }
+
   // Handle pointer down (drawing start, shape start, eraser click, crop handle drag)
-  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.button !== 0) return;
     const pt = getCanvasCoords(e);
 
     if (activeTool === "crop" && cropBox) {
-      // Check handles or inside
       const handle = getCropHandleAt(pt, cropBox);
       if (handle) {
         setActiveDragHandle(handle);
         dragStartPointRef.current = pt;
         cropBoxStartRef.current = { ...cropBox };
+        try {
+          (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
+        } catch {}
       } else if (
         pt.x >= cropBox.x &&
         pt.x <= cropBox.x + cropBox.width &&
@@ -718,6 +770,9 @@ export function ImageAnnotator({
         setActiveDragHandle("move");
         dragStartPointRef.current = pt;
         cropBoxStartRef.current = { ...cropBox };
+        try {
+          (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
+        } catch {}
       }
       return;
     }
@@ -728,6 +783,9 @@ export function ImageAnnotator({
     }
 
     setIsDrawing(true);
+    try {
+      (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
+    } catch {}
 
     if (activeTool === "pen" || activeTool === "highlighter") {
       currentStrokePointsRef.current = [pt];
@@ -740,54 +798,72 @@ export function ImageAnnotator({
   };
 
   // Handle pointer move
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const pt = getCanvasCoords(e);
 
-    if (activeTool === "crop" && cropBox && activeDragHandle && dragStartPointRef.current && cropBoxStartRef.current) {
-      const dx = pt.x - dragStartPointRef.current.x;
-      const dy = pt.y - dragStartPointRef.current.y;
-      const start = cropBoxStartRef.current;
+    if (activeTool === "crop" && cropBox) {
+      if (activeDragHandle && dragStartPointRef.current && cropBoxStartRef.current) {
+        const dx = pt.x - dragStartPointRef.current.x;
+        const dy = pt.y - dragStartPointRef.current.y;
+        const start = cropBoxStartRef.current;
 
-      let newBox = { ...start };
+        let newBox = { ...start };
 
-      if (activeDragHandle === "move") {
-        newBox.x = Math.max(0, Math.min(dimensions.width - start.width, start.x + dx));
-        newBox.y = Math.max(0, Math.min(dimensions.height - start.height, start.y + dy));
-      } else {
-        if (activeDragHandle.includes("w")) {
-          const maxLeft = start.x + start.width - 20;
-          newBox.x = Math.max(0, Math.min(maxLeft, start.x + dx));
-          newBox.width = start.width - (newBox.x - start.x);
-        }
-        if (activeDragHandle.includes("e")) {
-          newBox.width = Math.max(20, Math.min(dimensions.width - start.x, start.width + dx));
-        }
-        if (activeDragHandle.includes("n")) {
-          const maxTop = start.y + start.height - 20;
-          newBox.y = Math.max(0, Math.min(maxTop, start.y + dy));
-          newBox.height = start.height - (newBox.y - start.y);
-        }
-        if (activeDragHandle.includes("s")) {
-          newBox.height = Math.max(20, Math.min(dimensions.height - start.y, start.height + dy));
-        }
+        if (activeDragHandle === "move") {
+          newBox.x = Math.max(0, Math.min(dimensions.width - start.width, start.x + dx));
+          newBox.y = Math.max(0, Math.min(dimensions.height - start.height, start.y + dy));
+        } else {
+          if (activeDragHandle.includes("w")) {
+            const maxLeft = start.x + start.width - 20;
+            newBox.x = Math.max(0, Math.min(maxLeft, start.x + dx));
+            newBox.width = start.width - (newBox.x - start.x);
+          }
+          if (activeDragHandle.includes("e")) {
+            newBox.width = Math.max(20, Math.min(dimensions.width - start.x, start.width + dx));
+          }
+          if (activeDragHandle.includes("n")) {
+            const maxTop = start.y + start.height - 20;
+            newBox.y = Math.max(0, Math.min(maxTop, start.y + dy));
+            newBox.height = start.height - (newBox.y - start.y);
+          }
+          if (activeDragHandle.includes("s")) {
+            newBox.height = Math.max(20, Math.min(dimensions.height - start.y, start.height + dy));
+          }
 
-        // Apply aspect ratio constraints if enabled
-        if (cropRatio !== "free") {
-          let ratio = 1;
-          if (cropRatio === "16:9") ratio = 16 / 9;
-          else if (cropRatio === "4:3") ratio = 4 / 3;
-          else if (cropRatio === "3:2") ratio = 3 / 2;
+          // Apply aspect ratio constraints if enabled
+          if (cropRatio !== "free") {
+            let ratio = 1;
+            if (cropRatio === "16:9") ratio = 16 / 9;
+            else if (cropRatio === "4:3") ratio = 4 / 3;
+            else if (cropRatio === "3:2") ratio = 3 / 2;
 
-          newBox.height = newBox.width / ratio;
-          if (newBox.y + newBox.height > dimensions.height) {
-            newBox.height = dimensions.height - newBox.y;
-            newBox.width = newBox.height * ratio;
+            newBox.height = newBox.width / ratio;
+            if (newBox.y + newBox.height > dimensions.height) {
+              newBox.height = dimensions.height - newBox.y;
+              newBox.width = newBox.height * ratio;
+            }
           }
         }
-      }
 
-      setCropBox(newBox);
-      renderCanvas();
+        setCropBox(newBox);
+        renderCanvas();
+        return;
+      } else {
+        // Hovering in crop mode: update cursor based on handle
+        const handle = getCropHandleAt(pt, cropBox);
+        if (handle) {
+          setHoverCropHandle(handle);
+        } else if (
+          pt.x >= cropBox.x &&
+          pt.x <= cropBox.x + cropBox.width &&
+          pt.y >= cropBox.y &&
+          pt.y <= cropBox.y + cropBox.height
+        ) {
+          setHoverCropHandle("move");
+        } else {
+          setHoverCropHandle(null);
+        }
+      }
       return;
     }
 
@@ -816,7 +892,13 @@ export function ImageAnnotator({
   };
 
   // Handle pointer up / end
-  const handleMouseUp = (e?: React.MouseEvent<HTMLCanvasElement>) => {
+  const handlePointerUp = (e?: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e && (e.currentTarget as HTMLCanvasElement)?.hasPointerCapture?.(e.pointerId)) {
+      try {
+        (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+      } catch {}
+    }
+
     if (activeTool === "crop") {
       setActiveDragHandle(null);
       dragStartPointRef.current = null;
@@ -915,26 +997,7 @@ export function ImageAnnotator({
     }
   }
 
-  function getCropHandleAt(pt: Point, box: CropBox): string | null {
-    const r = 14;
-    const handles: Record<string, Point> = {
-      nw: { x: box.x, y: box.y },
-      n: { x: box.x + box.width / 2, y: box.y },
-      ne: { x: box.x + box.width, y: box.y },
-      e: { x: box.x + box.width, y: box.y + box.height / 2 },
-      se: { x: box.x + box.width, y: box.y + box.height },
-      s: { x: box.x + box.width / 2, y: box.y + box.height },
-      sw: { x: box.x, y: box.y + box.height },
-      w: { x: box.x, y: box.y + box.height / 2 },
-    };
 
-    for (const [name, pos] of Object.entries(handles)) {
-      if (Math.hypot(pt.x - pos.x, pt.y - pos.y) <= r) {
-        return name;
-      }
-    }
-    return null;
-  }
 
   // Generate flattened PNG Data URL with all annotations rendered
   const getFlattenedDataUrl = (): string => {
@@ -1495,17 +1558,17 @@ export function ImageAnnotator({
             ref={canvasRef}
             width={dimensions.width}
             height={dimensions.height}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            className={`max-w-[calc(90vw)] max-h-[calc(78vh)] object-contain select-none ${
-              activeTool === "eraser"
-                ? "cursor-cell"
-                : activeTool === "crop"
-                ? "cursor-move"
-                : "cursor-crosshair"
-            }`}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+            onPointerLeave={() => {
+              if (!activeDragHandle && !isDrawing) {
+                setHoverCropHandle(null);
+              }
+            }}
+            style={{ cursor: getCanvasCursor() }}
+            className="max-w-[calc(90vw)] max-h-[calc(78vh)] object-contain select-none touch-none"
           />
         </div>
       </div>
