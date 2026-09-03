@@ -2,7 +2,10 @@
 
 use std::path::PathBuf;
 
-use clipbox_core::{ClipboardEntry as CoreClipboardEntry, ClipboardStore};
+use clipbox_core::{
+    deleted_retention_lifetime_seconds, ClipboardEntry as CoreClipboardEntry, ClipboardStore,
+    DeletedEntry as CoreDeletedEntry,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
@@ -55,6 +58,46 @@ impl From<CoreClipboardEntry> for ClipboardEntry {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedClipboardEntry {
+    pub id: i64,
+    pub content: String,
+    pub copied_at: i64,
+    pub source_app: Option<String>,
+    pub source_process: Option<String>,
+    pub window_title: Option<String>,
+    pub app_icon: Option<String>,
+    pub is_pinned: bool,
+    pub entry_type: String,
+    pub image_data: Option<String>,
+    pub image_dimensions: Option<String>,
+    pub files_data: Option<String>,
+    pub source_url: Option<String>,
+    pub deleted_at: i64,
+}
+
+impl From<CoreDeletedEntry> for DeletedClipboardEntry {
+    fn from(entry: CoreDeletedEntry) -> Self {
+        Self {
+            id: entry.id,
+            content: entry.content,
+            copied_at: entry.copied_at,
+            source_app: entry.source_app,
+            source_process: entry.source_process,
+            window_title: entry.window_title,
+            app_icon: entry.app_icon,
+            is_pinned: entry.is_pinned,
+            entry_type: entry.entry_type,
+            image_data: entry.image_data,
+            image_dimensions: entry.image_dimensions,
+            files_data: entry.files_data,
+            source_url: entry.source_url,
+            deleted_at: entry.deleted_at,
+        }
+    }
+}
+
 #[tauri::command]
 fn list_entries(state: tauri::State<'_, AppState>) -> Result<Vec<ClipboardEntry>, String> {
     let store = ClipboardStore::open(&state.database_path)
@@ -83,17 +126,139 @@ fn clear_entries(state: tauri::State<'_, AppState>) -> Result<usize, String> {
 
 // ----------
 // Delete Single Entry Command
-// Description: IPC command allowing the frontend to permanently remove an individual clipboard record by its unique ID.
+// Description: IPC command moving an individual clipboard record into the Recently Deleted archive by its unique ID. With the "immediately" retention the record is hard-deleted instead. Returns "archived", "deleted", or "missing" so the frontend can confirm accordingly.
 // ----------
 
 #[tauri::command]
-fn delete_entry(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, String> {
+fn delete_entry(state: tauri::State<'_, AppState>, id: i64) -> Result<String, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+    if deleted_retention_setting(&store) == "immediately" {
+        return store
+            .delete_entry(id)
+            .map(|deleted| {
+                if deleted {
+                    "deleted".to_string()
+                } else {
+                    "missing".to_string()
+                }
+            })
+            .map_err(|error| format!("could not delete Clipbox entry: {error}"));
+    }
+
+    store
+        .soft_delete_entry(id)
+        .map(|archived| {
+            if archived {
+                "archived".to_string()
+            } else {
+                "missing".to_string()
+            }
+        })
+        .map_err(|error| format!("could not archive Clipbox entry: {error}"))
+}
+
+// ----------
+// Recently Deleted Archive Commands
+// Description: IPC commands listing, restoring, permanently deleting, and purging archived clipboard records, plus the deleted-retention setting.
+// ----------
+
+/// Deleted-retention setting value, defaulting to a 7-day safety net.
+fn deleted_retention_setting(store: &ClipboardStore) -> String {
+    store
+        .get_setting("deleted_retention")
+        .unwrap_or_default()
+        .unwrap_or_else(|| "7days".into())
+}
+
+/// Purge archived records older than the configured retention timespan.
+/// Returns the number of purged rows (0 for "immediately", which never archives).
+fn purge_expired_deleted_entries(store: &ClipboardStore) -> usize {
+    let setting = deleted_retention_setting(store);
+    let Some(lifetime) = deleted_retention_lifetime_seconds(&setting) else {
+        return 0;
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    store
+        .purge_deleted_entries_older_than(now.saturating_sub(lifetime as i64))
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+fn list_deleted_entries(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<DeletedClipboardEntry>, String> {
     let store = ClipboardStore::open(&state.database_path)
         .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
     store
-        .delete_entry(id)
-        .map_err(|error| format!("could not delete Clipbox entry: {error}"))
+        .recent_deleted_entries(100)
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(DeletedClipboardEntry::from)
+                .collect()
+        })
+        .map_err(|error| format!("could not read deleted Clipbox entries: {error}"))
+}
+
+#[tauri::command]
+fn restore_deleted_entry(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+) -> Result<Option<i64>, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+    store
+        .restore_deleted_entry(id)
+        .map_err(|error| format!("could not restore deleted Clipbox entry: {error}"))
+}
+
+#[tauri::command]
+fn delete_deleted_entry(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+    store
+        .hard_delete_entry(id)
+        .map_err(|error| format!("could not permanently delete Clipbox entry: {error}"))
+}
+
+#[tauri::command]
+fn get_deleted_retention(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    Ok(deleted_retention_setting(&store))
+}
+
+#[tauri::command]
+fn set_deleted_retention(
+    state: tauri::State<'_, AppState>,
+    retention: String,
+) -> Result<usize, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+    store
+        .set_setting("deleted_retention", &retention)
+        .map_err(|error| format!("could not save deleted retention setting: {error}"))?;
+
+    // Switching to "immediately" purges the whole archive at once; shorter
+    // timespans purge whatever is already past them.
+    if retention == "immediately" {
+        return store
+            .purge_deleted_entries_older_than(i64::MAX)
+            .map_err(|error| format!("could not purge deleted Clipbox entries: {error}"));
+    }
+
+    Ok(purge_expired_deleted_entries(&store))
 }
 
 // ----------
@@ -993,6 +1158,21 @@ pub fn run() {
                 }
             }
 
+            // Purge expired Recently Deleted records on startup, then hourly
+            // while the app keeps running from the tray.
+            if let Ok(store) = ClipboardStore::open(&database_path) {
+                let _ = purge_expired_deleted_entries(&store);
+            }
+            {
+                let database_path = database_path.clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(3_600));
+                    if let Ok(store) = ClipboardStore::open(&database_path) {
+                        let _ = purge_expired_deleted_entries(&store);
+                    }
+                });
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1008,6 +1188,11 @@ pub fn run() {
             list_entries,
             clear_entries,
             delete_entry,
+            list_deleted_entries,
+            restore_deleted_entry,
+            delete_deleted_entry,
+            get_deleted_retention,
+            set_deleted_retention,
             toggle_pinned,
             minimize_window,
             start_dragging,

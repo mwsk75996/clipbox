@@ -4,6 +4,7 @@
 // ----------
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -22,6 +23,8 @@ import {
   Files,
   PauseCircle,
   ExternalLink,
+  TriangleAlert,
+  X,
 } from "lucide-react";
 import { startOfDay, endOfDay } from "date-fns";
 import type { DateRange } from "react-day-picker";
@@ -29,6 +32,7 @@ import type { DateRange } from "react-day-picker";
 import { Titlebar } from "@/components/titlebar";
 import { ImageLightbox } from "@/components/image-lightbox";
 import { FileEntryCard } from "@/components/file-entry-card";
+import { DeletedEntryCard } from "@/components/deleted-entry-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -76,10 +80,49 @@ export interface ClipboardEntry {
   sourceUrl?: string | null;
 }
 
+export interface DeletedClipboardEntry {
+  id: number;
+  content: string;
+  copiedAt: number;
+  sourceApp?: string | null;
+  sourceProcess?: string | null;
+  windowTitle?: string | null;
+  appIcon?: string | null;
+  isPinned?: boolean;
+  entryType?: string;
+  imageData?: string | null;
+  imageDimensions?: string | null;
+  filesData?: string | null;
+  sourceUrl?: string | null;
+  deletedAt: number;
+}
+
 // Minimum time between full feed reloads triggered by window focus.
 // Real-time clipboard events keep the visible feed updated, so a focus that
 // closely follows any fetch skips the reload instead of rerendering everything.
 const FOCUS_REFETCH_MIN_INTERVAL_MS = 30_000;
+
+// Display labels for the deleted_retention setting values.
+const TRASH_RETENTION_LABELS: Record<string, string> = {
+  immediately: "Immediately",
+  "1hour": "1 hour",
+  "1day": "1 day",
+  "7days": "7 days",
+  "30days": "30 days",
+};
+
+// Minimum time the per-card "Restoring..." indication stays visible, so fast
+// restores don't flash and slow ones feel deliberate instead of glitchy.
+const RESTORE_MIN_INDICATION_MS = 900;
+
+// Maximum stacked global toasts; oldest dismisses first beyond this.
+const MAX_STACKED_TOASTS = 3;
+
+interface AppToast {
+  id: number;
+  message: string;
+  kind: "success" | "error";
+}
 
 const PREVIEW_ENTRIES: ClipboardEntry[] = [
   {
@@ -110,7 +153,7 @@ const PREVIEW_ENTRIES: ClipboardEntry[] = [
   },
 ];
 
-function formatTimestamp(timestamp: number): string {
+export function formatTimestamp(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleString(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
@@ -137,7 +180,7 @@ function isWebUrl(text?: string | null): boolean {
   );
 }
 
-function sourceLabel(entry: ClipboardEntry): string {
+export function sourceLabel(entry: ClipboardEntry): string {
   return (
     entry.sourceApp ||
     entry.sourceProcess ||
@@ -150,7 +193,7 @@ function sourceLabel(entry: ClipboardEntry): string {
 // Leading Empty Line Sanitizer
 // Description: Trims leading empty lines so copied text and display blocks start cleanly with content.
 // ----------
-function stripLeadingEmptyLines(text: string): string {
+export function stripLeadingEmptyLines(text: string): string {
   const lines = text.split(/\r?\n/);
   while (lines.length > 1 && lines[0].trim() === "") {
     lines.shift();
@@ -170,6 +213,10 @@ export default function App() {
   const [focusedIndex, setFocusedIndex] = React.useState<number | null>(null);
   const [isFilterOpen, setIsFilterOpen] = React.useState(false);
   const [previewEntry, setPreviewEntry] = React.useState<ClipboardEntry | null>(null);
+  const [showDeleted, setShowDeleted] = React.useState(false);
+  const [deletedEntries, setDeletedEntries] = React.useState<DeletedClipboardEntry[]>([]);
+  const [trashRetention, setTrashRetention] = React.useState<string | null>(null);
+  const [toasts, setToasts] = React.useState<AppToast[]>([]);
 
   // Keyboard shortcuts and privacy monitoring state
   const [shortcuts, setShortcuts] = React.useState<ShortcutSettings>(DEFAULT_SHORTCUTS);
@@ -178,6 +225,17 @@ export default function App() {
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const inFlightDeletionsRef = React.useRef<Set<number>>(new Set());
   const lastFetchTimeRef = React.useRef<number>(0);
+  const toastIdRef = React.useRef<number>(0);
+
+  // Stacked transient confirmation pills (each auto-dismisses independently).
+  const showToast = React.useCallback((message: string, kind: "success" | "error" = "success") => {
+    toastIdRef.current += 1;
+    const id = toastIdRef.current;
+    setToasts((prev) => [...prev.slice(-(MAX_STACKED_TOASTS - 1)), { id, message, kind }]);
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((toast) => toast.id !== id));
+    }, 3000);
+  }, []);
   const lastMousePosRef = React.useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const lastKeyboardNavTimeRef = React.useRef<number>(0);
 
@@ -454,15 +512,95 @@ export default function App() {
     event?.stopPropagation();
     inFlightDeletionsRef.current.add(id);
     setEntries((prev) => prev.filter((entry) => entry.id !== id));
+    // Re-sync after success: the backend resequences higher ids on every
+    // delete, so displayed ids above the deleted one are stale afterwards.
+    // A second delete using a stale id would archive the wrong record
+    // (or nothing, leaving a ghost that only a later refetch reveals).
+    let synced = false;
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-        await invoke("delete_entry", { id });
+        const outcome = await invoke<string>("delete_entry", { id });
+        if (outcome === "archived") {
+          showToast("Moved to Trash");
+        } else if (outcome === "deleted") {
+          showToast("Deleted permanently");
+        }
+        synced = outcome === "archived" || outcome === "deleted";
       }
     } catch (err) {
       console.error("Failed to delete entry", err);
+      showToast("Delete failed", "error");
       fetchEntries();
     } finally {
       inFlightDeletionsRef.current.delete(id);
+    }
+    if (synced) {
+      fetchEntries();
+    }
+  };
+
+  const fetchDeletedEntries = React.useCallback(async () => {
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        setDeletedEntries(await invoke<DeletedClipboardEntry[]>("list_deleted_entries"));
+      } else {
+        setDeletedEntries([]);
+      }
+    } catch (err) {
+      console.error("Failed to fetch deleted entries:", err);
+    }
+  }, []);
+
+  const fetchTrashRetention = React.useCallback(async () => {
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        setTrashRetention(await invoke<string>("get_deleted_retention"));
+      } else {
+        setTrashRetention(null);
+      }
+    } catch (err) {
+      console.error("Failed to fetch deleted retention:", err);
+      setTrashRetention(null);
+    }
+  }, []);
+
+  const handleRestoreDeleted = async (id: number) => {
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        // Race the restore against a minimum indication window so the
+        // per-card "Restoring..." state always reads as deliberate.
+        const [restoredId] = await Promise.all([
+          invoke<number | null>("restore_deleted_entry", { id }),
+          new Promise<void>((resolve) => {
+            window.setTimeout(resolve, RESTORE_MIN_INDICATION_MS);
+          }),
+        ]);
+        if (restoredId !== null) {
+          showToast("Restored to history");
+        }
+      }
+      // Awaited so the card holds "Restoring..." until the lists actually
+      // commit; otherwise the spinner stops first and the row lingers while
+      // the (potentially image-heavy) refetch is still in flight.
+      await Promise.all([fetchEntries(), fetchDeletedEntries()]);
+    } catch (err) {
+      console.error("Failed to restore entry", err);
+      showToast("Restore failed", "error");
+    }
+  };
+
+  const handleDeleteForever = async (id: number, event?: React.MouseEvent) => {
+    event?.stopPropagation();
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("delete_deleted_entry", { id });
+        showToast("Permanently deleted");
+      }
+      setDeletedEntries((prev) => prev.filter((entry) => entry.id !== id));
+    } catch (err) {
+      console.error("Failed to permanently delete entry", err);
+      showToast("Delete failed", "error");
+      fetchDeletedEntries();
     }
   };
 
@@ -472,6 +610,14 @@ export default function App() {
     setSearchQuery("");
     setDateRange(undefined);
     setIsFilterOpen(false);
+  };
+
+  const enterDeletedView = () => {
+    clearFilters();
+    setFocusedIndex(null);
+    setShowDeleted(true);
+    fetchDeletedEntries();
+    fetchTrashRetention();
   };
 
   // Reset keyboard focus when search or filters change
@@ -535,14 +681,16 @@ export default function App() {
           setFocusedIndex(null);
         } else if (focusedIndex !== null) {
           setFocusedIndex(null);
+        } else if (showDeleted) {
+          setShowDeleted(false);
         } else if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
           invoke("hide_window").catch(console.error);
         }
         return;
       }
 
-      // Configurable Nav Down shortcut
-      if (matchesBinding(event, shortcuts.nav_down)) {
+      // Configurable Nav Down shortcut (active feed only)
+      if (matchesBinding(event, shortcuts.nav_down) && !showDeleted) {
         event.preventDefault();
         lastKeyboardNavTimeRef.current = Date.now();
         if (filteredEntries.length === 0) return;
@@ -553,8 +701,8 @@ export default function App() {
         return;
       }
 
-      // Configurable Nav Up shortcut
-      if (matchesBinding(event, shortcuts.nav_up)) {
+      // Configurable Nav Up shortcut (active feed only)
+      if (matchesBinding(event, shortcuts.nav_up) && !showDeleted) {
         event.preventDefault();
         lastKeyboardNavTimeRef.current = Date.now();
         setFocusedIndex((prev) => {
@@ -567,16 +715,16 @@ export default function App() {
         return;
       }
 
-      // Configurable Copy focused entry shortcut
-      if (matchesBinding(event, shortcuts.copy_entry) && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      // Configurable Copy focused entry shortcut (active feed only)
+      if (matchesBinding(event, shortcuts.copy_entry) && !showDeleted && focusedIndex !== null && filteredEntries[focusedIndex]) {
         event.preventDefault();
         const targetEntry = filteredEntries[focusedIndex];
         handleCopy(targetEntry);
         return;
       }
 
-      // Configurable Expand / collapse preview shortcut
-      if (matchesBinding(event, shortcuts.expand_preview) && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      // Configurable Expand / collapse preview shortcut (active feed only)
+      if (matchesBinding(event, shortcuts.expand_preview) && !showDeleted && focusedIndex !== null && filteredEntries[focusedIndex]) {
         event.preventDefault();
         const targetEntry = filteredEntries[focusedIndex];
         const content = stripLeadingEmptyLines(targetEntry.content);
@@ -588,8 +736,8 @@ export default function App() {
         return;
       }
 
-      // Configurable Delete focused entry shortcut
-      if (matchesBinding(event, shortcuts.delete_entry) && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      // Configurable Delete focused entry shortcut (active feed only)
+      if (matchesBinding(event, shortcuts.delete_entry) && !showDeleted && focusedIndex !== null && filteredEntries[focusedIndex]) {
         event.preventDefault();
         const targetEntry = filteredEntries[focusedIndex];
         handleDelete(targetEntry.id);
@@ -599,8 +747,8 @@ export default function App() {
         return;
       }
 
-      // Configurable Toggle Pin shortcut
-      if (matchesBinding(event, shortcuts.toggle_pin) && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      // Configurable Toggle Pin shortcut (active feed only)
+      if (matchesBinding(event, shortcuts.toggle_pin) && !showDeleted && focusedIndex !== null && filteredEntries[focusedIndex]) {
         event.preventDefault();
         const targetEntry = filteredEntries[focusedIndex];
         handleTogglePin(targetEntry.id);
@@ -667,7 +815,7 @@ export default function App() {
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("pointerdown", handlePointerDown);
     };
-  }, [filteredEntries, focusedIndex, previewEntry, searchQuery, hasActiveFilters, shortcuts]);
+  }, [filteredEntries, focusedIndex, previewEntry, searchQuery, hasActiveFilters, shortcuts, showDeleted]);
 
   // Handle card expansion while preventing collapse when selecting/marking text
   const handleCardClick = (
@@ -712,7 +860,7 @@ export default function App() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "ArrowDown" && filteredEntries.length > 0) {
+                  if (e.key === "ArrowDown" && !showDeleted && filteredEntries.length > 0) {
                     e.preventDefault();
                     searchInputRef.current?.blur();
                     setFocusedIndex(0);
@@ -732,7 +880,9 @@ export default function App() {
                 <Button
                   variant={selectedApp !== "all" || selectedType !== "all" ? "default" : "outline"}
                   size="sm"
-                  className="gap-1.5 shrink-0 h-9"
+                  className={`gap-1.5 shrink-0 h-9 ${
+                    selectedApp !== "all" || selectedType !== "all" ? "border border-transparent" : ""
+                  }`}
                 >
                   <SlidersHorizontal className="size-4" />
                   Filters
@@ -805,6 +955,25 @@ export default function App() {
               </PopoverContent>
             </Popover>
 
+            <Button
+              variant={showDeleted ? "default" : "outline"}
+              size="sm"
+              onClick={() => {
+                if (showDeleted) {
+                  setShowDeleted(false);
+                } else {
+                  enterDeletedView();
+                }
+              }}
+              // Transparent border in the active state keeps the box identical
+              // to the outlined inactive state (outline adds a 1px border).
+              className={`gap-1.5 shrink-0 h-9 ${showDeleted ? "border border-transparent" : ""}`}
+              title="View recently deleted clips"
+            >
+              <Trash2 className="size-4" />
+              Trash
+            </Button>
+
             {isMonitoringPaused && (
               <Button
                 variant="outline"
@@ -823,6 +992,7 @@ export default function App() {
               onClearHistory={() => {
                 inFlightDeletionsRef.current.clear();
                 setEntries([]);
+                fetchDeletedEntries();
               }}
               shortcuts={shortcuts}
               onShortcutsChange={setShortcuts}
@@ -834,7 +1004,82 @@ export default function App() {
 
         {/* Main Content Area */}
         <main className="flex-1 w-full overflow-hidden flex flex-col min-h-0 relative">
-          {filteredEntries.length === 0 ? (
+          {showDeleted ? (
+            <div className="relative flex-1 w-full min-h-0 flex flex-col overflow-hidden">
+              <ScrollArea className="flex-1 w-full h-full fade-bottom-mask">
+                <div className="max-w-4xl w-full mx-auto px-6 pt-5 pb-20 space-y-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <h3 className="text-sm font-semibold flex items-center gap-1.5">
+                        <Trash2 className="size-4" />
+                        Recently Deleted
+                        {trashRetention === "immediately" ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                            <TriangleAlert className="size-3" />
+                            Instant deletion on
+                          </span>
+                        ) : trashRetention ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-muted text-muted-foreground border">
+                            Auto-purge: {TRASH_RETENTION_LABELS[trashRetention] ?? trashRetention}
+                          </span>
+                        ) : null}
+                      </h3>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Restore clips before they are permanently purged.
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowDeleted(false)}
+                      className="gap-1.5 h-8 text-xs shrink-0"
+                    >
+                      <RotateCcw className="size-3.5" />
+                      Back to history
+                    </Button>
+                  </div>
+                  {deletedEntries.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-16 text-center">
+                      {trashRetention === "immediately" ? (
+                        <>
+                          <span className="size-12 rounded-full bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+                            <TriangleAlert className="size-6 text-amber-500" />
+                          </span>
+                          <h4 className="text-sm font-semibold mt-4">Instant deletion is on</h4>
+                          <p className="text-xs text-muted-foreground max-w-xs mt-1">
+                            Deleted clips are purged immediately and can&apos;t be restored.
+                            Change this in Settings, under Storage &amp; Database.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <span className="size-12 rounded-full bg-muted border flex items-center justify-center">
+                            <Trash2 className="size-6 text-muted-foreground" />
+                          </span>
+                          <h4 className="text-sm font-semibold mt-4">Trash is empty</h4>
+                          <p className="text-xs text-muted-foreground max-w-xs mt-1">
+                            {trashRetention && TRASH_RETENTION_LABELS[trashRetention]
+                              ? `Deleted clips stay here for ${TRASH_RETENTION_LABELS[trashRetention].toLowerCase()} before permanent purge.`
+                              : "Deleted clips stay here until the retention timespan passes."}
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  ) : (
+                    deletedEntries.map((entry) => (
+                      <DeletedEntryCard
+                        key={entry.id}
+                        entry={entry}
+                        retention={trashRetention}
+                        onRestore={handleRestoreDeleted}
+                        onDeleteForever={handleDeleteForever}
+                      />
+                    ))
+                  )}
+                </div>
+              </ScrollArea>
+            </div>
+          ) : filteredEntries.length === 0 ? (
             <div className="max-w-4xl w-full mx-auto px-6 flex flex-col items-center justify-center my-auto py-16 text-center">
               <p className="text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
                 Your Clipboard
@@ -1174,6 +1419,28 @@ export default function App() {
         )}
         </main>
       </div>
+
+      {toasts.length > 0 &&
+        createPortal(
+          <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-[100] pointer-events-none flex flex-col items-center gap-2">
+            {toasts.map((toast) => (
+              <div
+                key={toast.id}
+                className="animate-in fade-in-0 slide-in-from-bottom-2 duration-200"
+              >
+                <div className="bg-popover/95 backdrop-blur-md text-popover-foreground border shadow-xl rounded-full px-4 py-2 flex items-center gap-2 text-xs font-medium whitespace-nowrap">
+                  {toast.kind === "success" ? (
+                    <Check className="size-4 text-emerald-400 shrink-0" />
+                  ) : (
+                    <X className="size-4 text-red-400 shrink-0" />
+                  )}
+                  <span>{toast.message}</span>
+                </div>
+              </div>
+            ))}
+          </div>,
+          document.body
+        )}
 
       <ImageLightbox
         entry={previewEntry}
