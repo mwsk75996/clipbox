@@ -47,6 +47,8 @@ jobs:
     needs: check-version
     if: needs.check-version.outputs.changed == 'true'
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -65,3 +67,16 @@ jobs:
 
       - name: Build Tauri app and NSIS installer
         uses: tauri-apps/tauri-action@v0
+
+      - name: Publish GitHub Release
+        run: |
+          $tag = "v${{ needs.check-version.outputs.version }}"
+          $assets = Get-ChildItem target/release/bundle/nsis/*.exe
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $assets.FullName --clobber
+          } else {
+            gh release create $tag $assets.FullName --title "Clipbox ${{ needs.check-version.outputs.version }}" --generate-notes
+          }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
