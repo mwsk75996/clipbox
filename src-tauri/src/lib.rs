@@ -964,6 +964,18 @@ pub fn run() {
 
             // Initial window visibility and development connection error handling
             if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_min_size(Some(tauri::LogicalSize::new(900.0, 700.0)));
+                if let Ok(size) = window.inner_size() {
+                    if let Ok(scale_factor) = window.scale_factor() {
+                        let logical_width = size.width as f64 / scale_factor;
+                        let logical_height = size.height as f64 / scale_factor;
+                        if logical_width < 900.0 || logical_height < 700.0 {
+                            let new_w = logical_width.max(900.0);
+                            let new_h = logical_height.max(700.0);
+                            let _ = window.set_size(tauri::LogicalSize::new(new_w, new_h));
+                        }
+                    }
+                }
                 #[cfg(debug_assertions)]
                 {
                     use std::net::{SocketAddr, TcpStream};

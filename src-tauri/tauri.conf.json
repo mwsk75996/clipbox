@@ -15,9 +15,9 @@
       {
         "title": "Clipbox",
         "width": 900,
-        "height": 640,
-        "minWidth": 480,
-        "minHeight": 320,
+        "height": 700,
+        "minWidth": 900,
+        "minHeight": 700,
         "resizable": true,
         "decorations": false,
         "visible": false
