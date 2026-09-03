@@ -18,11 +18,13 @@ import {
   Pin,
   Image as ImageIcon,
   Camera,
+  ZoomIn,
 } from "lucide-react";
 import { startOfDay, endOfDay } from "date-fns";
 import type { DateRange } from "react-day-picker";
 
 import { Titlebar } from "@/components/titlebar";
+import { ImageLightbox } from "@/components/image-lightbox";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -128,6 +130,7 @@ export default function App() {
   const [expandedId, setExpandedId] = React.useState<number | null>(null);
   const [copiedId, setCopiedId] = React.useState<number | null>(null);
   const [isFilterOpen, setIsFilterOpen] = React.useState(false);
+  const [previewEntry, setPreviewEntry] = React.useState<ClipboardEntry | null>(null);
 
   const searchInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -681,18 +684,43 @@ export default function App() {
                       <CardContent className="p-4 pt-1">
                         {entry.entryType === "image" && entry.imageData ? (
                           <div>
-                            <div className="relative overflow-hidden rounded-md border bg-muted/20 max-h-[300px] flex items-center justify-center p-1.5">
+                            <div
+                              className="relative group overflow-hidden rounded-md border bg-muted/20 max-h-[300px] flex items-center justify-center p-1.5 cursor-zoom-in transition-all hover:border-primary/40 hover:bg-muted/30"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPreviewEntry(entry);
+                              }}
+                              title="Click to view full-size image"
+                            >
                               <img
                                 src={entry.imageData}
                                 alt={entry.content}
-                                className="max-h-[280px] w-auto max-w-full object-contain rounded select-none pointer-events-none"
+                                className="max-h-[280px] w-auto max-w-full object-contain rounded select-none transition-transform duration-200 group-hover:scale-[1.015]"
                                 loading="lazy"
                               />
+                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100 pointer-events-none">
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-black/75 text-white text-xs font-medium backdrop-blur-sm shadow-md">
+                                  <ZoomIn className="size-3.5" />
+                                  Preview
+                                </span>
+                              </div>
                             </div>
                             {entry.imageDimensions && (
-                              <div className="flex items-center gap-1.5 mt-2 text-[11px] text-muted-foreground font-mono">
-                                <ImageIcon className="size-3" />
-                                <span>{entry.imageDimensions}</span>
+                              <div className="flex items-center justify-between mt-2 text-[11px] text-muted-foreground font-mono">
+                                <div className="flex items-center gap-1.5">
+                                  <ImageIcon className="size-3" />
+                                  <span>{entry.imageDimensions}</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setPreviewEntry(entry);
+                                  }}
+                                  className="text-[11px] text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
+                                >
+                                  Click to expand
+                                </button>
                               </div>
                             )}
                           </div>
@@ -744,6 +772,13 @@ export default function App() {
         )}
         </main>
       </div>
+
+      <ImageLightbox
+        entry={previewEntry}
+        isOpen={previewEntry !== null}
+        onClose={() => setPreviewEntry(null)}
+        formatTimestamp={formatTimestamp}
+      />
     </div>
   );
 }
