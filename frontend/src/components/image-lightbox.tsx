@@ -75,7 +75,7 @@ export function ImageLightbox({
         role="dialog"
         aria-modal="true"
         aria-label="Image Editor"
-        className="fixed inset-0 z-50 flex flex-col bg-background animate-in fade-in-0 duration-200"
+        className="fixed top-9 inset-x-0 bottom-0 z-40 flex flex-col bg-background animate-in fade-in-0 duration-200"
       >
         <ImageAnnotator
           initialDataUrl={entry.imageData}
@@ -153,11 +153,17 @@ export function ImageLightbox({
       role="dialog"
       aria-modal="true"
       aria-label="Image Preview Lightbox"
-      className="fixed inset-0 z-50 flex flex-col bg-black/85 backdrop-blur-md animate-in fade-in-0 duration-200"
+      className="fixed top-9 inset-x-0 bottom-0 z-40 flex flex-col bg-black/85 backdrop-blur-md animate-in fade-in-0 duration-200"
       onClick={onClose}
     >
       {/* Top Action Bar */}
       <div
+        data-tauri-drag-region
+        onMouseDown={(e) => {
+          if (e.button === 0 && !(e.target as HTMLElement).closest("button")) {
+            invoke("start_dragging").catch(console.warn);
+          }
+        }}
         className="h-14 w-full bg-card/90 border-b border-border/60 px-4 flex items-center justify-between gap-3 shrink-0 select-none shadow-md backdrop-blur-sm"
         onClick={(e) => e.stopPropagation()}
       >

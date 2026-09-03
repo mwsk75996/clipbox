@@ -937,7 +937,18 @@ export function ImageAnnotator({
   return (
     <div className="flex flex-col h-full w-full bg-background select-none overflow-hidden animate-in fade-in-0 duration-200">
       {/* Top Editor Command Bar */}
-      <div className="h-14 w-full bg-card border-b px-4 flex items-center justify-between gap-2 shrink-0 shadow-sm">
+      <div
+        data-tauri-drag-region
+        onMouseDown={(e) => {
+          if (
+            e.button === 0 &&
+            !(e.target as HTMLElement).closest("button, input, [role='dialog'], [role='menu']")
+          ) {
+            invoke("start_dragging").catch(console.warn);
+          }
+        }}
+        className="h-14 w-full bg-card border-b px-4 flex items-center justify-between gap-2 shrink-0 shadow-sm select-none"
+      >
         {/* Left: Tools & Preset Selector */}
         <div className="flex items-center gap-1.5 flex-wrap">
           <Button

@@ -92,7 +92,7 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
       data-tauri-drag-region
       onMouseDown={handleMouseDown}
       onDoubleClick={handleToggleMaximize}
-      className="h-9 w-full bg-card border-b flex items-center justify-between select-none z-50 sticky top-0 cursor-default"
+      className="h-9 w-full bg-card border-b flex items-center justify-between select-none z-[60] sticky top-0 cursor-default"
     >
       {/* App Branding (Draggable) */}
       <div
