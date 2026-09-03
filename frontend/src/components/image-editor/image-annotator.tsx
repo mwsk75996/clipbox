@@ -106,6 +106,8 @@ export function ImageAnnotator({
   const currentStrokePointsRef = React.useRef<Point[]>([]);
   const shapeStartRef = React.useRef<Point | null>(null);
   const shapeCurrentRef = React.useRef<Point | null>(null);
+  const lastRawPointRef = React.useRef<Point | null>(null);
+  const isShiftPressedRef = React.useRef<boolean>(false);
 
   // Export action states
   const [copied, setCopied] = React.useState(false);
@@ -189,42 +191,36 @@ export function ImageAnnotator({
     setCropBox(null);
   };
 
-  // Keyboard shortcuts (Ctrl+Z, Ctrl+Shift+Z, tool switches)
-  React.useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).tagName === "INPUT") return;
+  // Helper to constrain shape to 1:1 square/circle or 45-degree line/arrow when Shift is held
+  const constrainShapePoint = React.useCallback(
+    (start: Point, pt: Point, isShift: boolean): Point => {
+      if (!isShift) return pt;
+      const dx = pt.x - start.x;
+      const dy = pt.y - start.y;
 
-      if ((e.ctrlKey || e.metaKey) && e.key === "z") {
-        e.preventDefault();
-        if (e.shiftKey) {
-          handleRedo();
-        } else {
-          handleUndo();
-        }
-      } else if ((e.ctrlKey || e.metaKey) && e.key === "y") {
-        e.preventDefault();
-        handleRedo();
-      } else if (e.key === "Escape") {
-        if (activeTool === "crop") {
-          setCropBox(null);
-          setActiveTool("pen");
-        } else {
-          onClose();
-        }
-      } else if (e.key === "p" || e.key === "P") {
-        setActiveTool("pen");
-      } else if (e.key === "h" || e.key === "H") {
-        setActiveTool("highlighter");
-      } else if (e.key === "e" || e.key === "E") {
-        setActiveTool("eraser");
-      } else if (e.key === "c" || e.key === "C") {
-        handleSelectCropTool();
+      if (activeTool === "rectangle" || activeTool === "circle") {
+        const side = Math.max(Math.abs(dx), Math.abs(dy));
+        const signX = dx >= 0 ? 1 : -1;
+        const signY = dy >= 0 ? 1 : -1;
+        return {
+          x: start.x + side * signX,
+          y: start.y + side * signY,
+        };
+      } else if (activeTool === "line" || activeTool === "arrow") {
+        const angle = Math.atan2(dy, dx);
+        const snappedAngle = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+        const len = Math.hypot(dx, dy);
+        return {
+          x: start.x + len * Math.cos(snappedAngle),
+          y: start.y + len * Math.sin(snappedAngle),
+        };
       }
-    };
+      return pt;
+    },
+    [activeTool]
+  );
 
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleUndo, handleRedo, activeTool, onClose]);
+
 
   // Initializing Crop Box when switching to Crop tool
   const handleSelectCropTool = () => {
@@ -404,6 +400,85 @@ export function ImageAnnotator({
   React.useEffect(() => {
     renderCanvas();
   }, [renderCanvas, dimensions, baseImage]);
+
+  // Keyboard shortcuts (Ctrl+Z, Ctrl+Shift+Z, Shift 1:1 constrain, tool switches)
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).tagName === "INPUT") return;
+
+      if (e.key === "Shift") {
+        isShiftPressedRef.current = true;
+        if (
+          isDrawing &&
+          shapeStartRef.current &&
+          lastRawPointRef.current &&
+          (activeTool === "rectangle" ||
+            activeTool === "circle" ||
+            activeTool === "line" ||
+            activeTool === "arrow")
+        ) {
+          shapeCurrentRef.current = constrainShapePoint(
+            shapeStartRef.current,
+            lastRawPointRef.current,
+            true
+          );
+          renderCanvas();
+        }
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key === "z") {
+        e.preventDefault();
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "y") {
+        e.preventDefault();
+        handleRedo();
+      } else if (e.key === "Escape") {
+        if (activeTool === "crop") {
+          setCropBox(null);
+          setActiveTool("pen");
+        } else {
+          onClose();
+        }
+      } else if (e.key === "p" || e.key === "P") {
+        setActiveTool("pen");
+      } else if (e.key === "h" || e.key === "H") {
+        setActiveTool("highlighter");
+      } else if (e.key === "e" || e.key === "E") {
+        setActiveTool("eraser");
+      } else if (e.key === "c" || e.key === "C") {
+        handleSelectCropTool();
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === "Shift") {
+        isShiftPressedRef.current = false;
+        if (
+          isDrawing &&
+          shapeStartRef.current &&
+          lastRawPointRef.current &&
+          (activeTool === "rectangle" ||
+            activeTool === "circle" ||
+            activeTool === "line" ||
+            activeTool === "arrow")
+        ) {
+          shapeCurrentRef.current = lastRawPointRef.current;
+          renderCanvas();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [handleUndo, handleRedo, activeTool, onClose, isDrawing, constrainShapePoint, renderCanvas]);
 
   // Drawing helpers
   function drawAnnotation(ctx: CanvasRenderingContext2D, ann: Annotation) {
@@ -659,6 +734,8 @@ export function ImageAnnotator({
     } else {
       shapeStartRef.current = pt;
       shapeCurrentRef.current = pt;
+      lastRawPointRef.current = pt;
+      isShiftPressedRef.current = e.shiftKey;
     }
   };
 
@@ -725,7 +802,13 @@ export function ImageAnnotator({
       activeTool === "line" ||
       activeTool === "arrow"
     ) {
-      shapeCurrentRef.current = pt;
+      lastRawPointRef.current = pt;
+      const isShift = e.shiftKey || isShiftPressedRef.current;
+      if (shapeStartRef.current) {
+        shapeCurrentRef.current = constrainShapePoint(shapeStartRef.current, pt, isShift);
+      } else {
+        shapeCurrentRef.current = pt;
+      }
       renderCanvas();
     } else if (activeTool === "eraser") {
       eraseAnnotationAt(pt);
@@ -733,7 +816,7 @@ export function ImageAnnotator({
   };
 
   // Handle pointer up / end
-  const handleMouseUp = () => {
+  const handleMouseUp = (e?: React.MouseEvent<HTMLCanvasElement>) => {
     if (activeTool === "crop") {
       setActiveDragHandle(null);
       dragStartPointRef.current = null;
@@ -745,6 +828,8 @@ export function ImageAnnotator({
     setIsDrawing(false);
 
     recordHistory();
+
+    const isShift = (e ? e.shiftKey : false) || isShiftPressedRef.current;
 
     if (activeTool === "pen" && currentStrokePointsRef.current.length > 0) {
       const newStroke: PenStroke = {
@@ -774,6 +859,13 @@ export function ImageAnnotator({
       shapeStartRef.current &&
       shapeCurrentRef.current
     ) {
+      if (lastRawPointRef.current && isShift) {
+        shapeCurrentRef.current = constrainShapePoint(
+          shapeStartRef.current,
+          lastRawPointRef.current,
+          true
+        );
+      }
       const dx = Math.abs(shapeCurrentRef.current.x - shapeStartRef.current.x);
       const dy = Math.abs(shapeCurrentRef.current.y - shapeStartRef.current.y);
       if (dx > 2 || dy > 2) {
@@ -790,6 +882,7 @@ export function ImageAnnotator({
       }
       shapeStartRef.current = null;
       shapeCurrentRef.current = null;
+      lastRawPointRef.current = null;
     }
 
     renderCanvas();
@@ -1429,6 +1522,7 @@ export function ImageAnnotator({
           <span><kbd className="px-1 py-0.5 bg-muted rounded border text-[10px] font-mono">H</kbd> Highlighter</span>
           <span><kbd className="px-1 py-0.5 bg-muted rounded border text-[10px] font-mono">E</kbd> Eraser</span>
           <span><kbd className="px-1 py-0.5 bg-muted rounded border text-[10px] font-mono">C</kbd> Crop</span>
+          <span><kbd className="px-1 py-0.5 bg-muted rounded border text-[10px] font-mono">Shift</kbd> 1:1 Square/Circle</span>
           <span><kbd className="px-1 py-0.5 bg-muted rounded border text-[10px] font-mono">Ctrl+Z</kbd> Undo</span>
           <span><kbd className="px-1 py-0.5 bg-muted rounded border text-[10px] font-mono">Esc</kbd> Exit</span>
         </div>
