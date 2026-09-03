@@ -126,22 +126,36 @@ fn clear_entries(state: tauri::State<'_, AppState>) -> Result<usize, String> {
 
 // ----------
 // Delete Single Entry Command
-// Description: IPC command moving an individual clipboard record into the Recently Deleted archive by its unique ID. With the "immediately" retention the record is hard-deleted instead.
+// Description: IPC command moving an individual clipboard record into the Recently Deleted archive by its unique ID. With the "immediately" retention the record is hard-deleted instead. Returns "archived", "deleted", or "missing" so the frontend can confirm accordingly.
 // ----------
 
 #[tauri::command]
-fn delete_entry(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, String> {
+fn delete_entry(state: tauri::State<'_, AppState>, id: i64) -> Result<String, String> {
     let store = ClipboardStore::open(&state.database_path)
         .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
     if deleted_retention_setting(&store) == "immediately" {
         return store
             .delete_entry(id)
+            .map(|deleted| {
+                if deleted {
+                    "deleted".to_string()
+                } else {
+                    "missing".to_string()
+                }
+            })
             .map_err(|error| format!("could not delete Clipbox entry: {error}"));
     }
 
     store
         .soft_delete_entry(id)
+        .map(|archived| {
+            if archived {
+                "archived".to_string()
+            } else {
+                "missing".to_string()
+            }
+        })
         .map_err(|error| format!("could not archive Clipbox entry: {error}"))
 }
 

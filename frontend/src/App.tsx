@@ -4,6 +4,7 @@
 // ----------
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -23,6 +24,7 @@ import {
   PauseCircle,
   ExternalLink,
   TriangleAlert,
+  X,
 } from "lucide-react";
 import { startOfDay, endOfDay } from "date-fns";
 import type { DateRange } from "react-day-picker";
@@ -201,6 +203,7 @@ export default function App() {
   const [showDeleted, setShowDeleted] = React.useState(false);
   const [deletedEntries, setDeletedEntries] = React.useState<DeletedClipboardEntry[]>([]);
   const [trashRetention, setTrashRetention] = React.useState<string | null>(null);
+  const [appToast, setAppToast] = React.useState<{ message: string; kind: "success" | "error" } | null>(null);
 
   // Keyboard shortcuts and privacy monitoring state
   const [shortcuts, setShortcuts] = React.useState<ShortcutSettings>(DEFAULT_SHORTCUTS);
@@ -209,6 +212,16 @@ export default function App() {
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const inFlightDeletionsRef = React.useRef<Set<number>>(new Set());
   const lastFetchTimeRef = React.useRef<number>(0);
+  const toastTimerRef = React.useRef<number | undefined>(undefined);
+
+  // Transient bottom-centered confirmation pill (auto-dismissed).
+  const showToast = React.useCallback((message: string, kind: "success" | "error" = "success") => {
+    setAppToast({ message, kind });
+    window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setAppToast(null), 3000);
+  }, []);
+
+  React.useEffect(() => () => window.clearTimeout(toastTimerRef.current), []);
   const lastMousePosRef = React.useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const lastKeyboardNavTimeRef = React.useRef<number>(0);
 
@@ -487,10 +500,16 @@ export default function App() {
     setEntries((prev) => prev.filter((entry) => entry.id !== id));
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-        await invoke("delete_entry", { id });
+        const outcome = await invoke<string>("delete_entry", { id });
+        if (outcome === "archived") {
+          showToast("Moved to Trash");
+        } else if (outcome === "deleted") {
+          showToast("Deleted permanently");
+        }
       }
     } catch (err) {
       console.error("Failed to delete entry", err);
+      showToast("Delete failed", "error");
       fetchEntries();
     } finally {
       inFlightDeletionsRef.current.delete(id);
@@ -525,12 +544,16 @@ export default function App() {
   const handleRestoreDeleted = async (id: number) => {
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-        await invoke("restore_deleted_entry", { id });
+        const restoredId = await invoke<number | null>("restore_deleted_entry", { id });
+        if (restoredId !== null) {
+          showToast("Restored to history");
+        }
       }
       fetchEntries();
       fetchDeletedEntries();
     } catch (err) {
       console.error("Failed to restore entry", err);
+      showToast("Restore failed", "error");
     }
   };
 
@@ -539,10 +562,12 @@ export default function App() {
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
         await invoke("delete_deleted_entry", { id });
+        showToast("Permanently deleted");
       }
       setDeletedEntries((prev) => prev.filter((entry) => entry.id !== id));
     } catch (err) {
       console.error("Failed to permanently delete entry", err);
+      showToast("Delete failed", "error");
       fetchDeletedEntries();
     }
   };
@@ -1362,6 +1387,21 @@ export default function App() {
         )}
         </main>
       </div>
+
+      {appToast &&
+        createPortal(
+          <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-[100] pointer-events-none animate-in fade-in-0 slide-in-from-bottom-2 duration-200">
+            <div className="bg-popover/95 backdrop-blur-md text-popover-foreground border shadow-xl rounded-full px-4 py-2 flex items-center gap-2 text-xs font-medium whitespace-nowrap">
+              {appToast.kind === "success" ? (
+                <Check className="size-4 text-emerald-400 shrink-0" />
+              ) : (
+                <X className="size-4 text-red-400 shrink-0" />
+              )}
+              <span>{appToast.message}</span>
+            </div>
+          </div>,
+          document.body
+        )}
 
       <ImageLightbox
         entry={previewEntry}
