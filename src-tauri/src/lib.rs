@@ -305,6 +305,7 @@ fn set_retention_limit(state: tauri::State<'_, AppState>, limit: String) -> Resu
 
 #[tauri::command]
 fn copy_to_clipboard(text: String) -> Result<(), String> {
+    clipboard::mark_internal_copy_text(&text);
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     clipboard.set_text(text).map_err(|e| e.to_string())
 }
@@ -335,6 +336,9 @@ fn copy_image_to_clipboard(data_url: String) -> Result<(), String> {
     let width = img.width() as usize;
     let height = img.height() as usize;
     let bytes = img.into_raw();
+
+    let sample_hash = image_clipboard::compute_bytes_hash(&bytes);
+    clipboard::mark_internal_copy_image(sample_hash);
 
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     clipboard
