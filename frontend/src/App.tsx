@@ -689,8 +689,8 @@ export default function App() {
         return;
       }
 
-      // Configurable Nav Down shortcut
-      if (matchesBinding(event, shortcuts.nav_down)) {
+      // Configurable Nav Down shortcut (active feed only)
+      if (matchesBinding(event, shortcuts.nav_down) && !showDeleted) {
         event.preventDefault();
         lastKeyboardNavTimeRef.current = Date.now();
         if (filteredEntries.length === 0) return;
@@ -701,8 +701,8 @@ export default function App() {
         return;
       }
 
-      // Configurable Nav Up shortcut
-      if (matchesBinding(event, shortcuts.nav_up)) {
+      // Configurable Nav Up shortcut (active feed only)
+      if (matchesBinding(event, shortcuts.nav_up) && !showDeleted) {
         event.preventDefault();
         lastKeyboardNavTimeRef.current = Date.now();
         setFocusedIndex((prev) => {
@@ -715,16 +715,16 @@ export default function App() {
         return;
       }
 
-      // Configurable Copy focused entry shortcut
-      if (matchesBinding(event, shortcuts.copy_entry) && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      // Configurable Copy focused entry shortcut (active feed only)
+      if (matchesBinding(event, shortcuts.copy_entry) && !showDeleted && focusedIndex !== null && filteredEntries[focusedIndex]) {
         event.preventDefault();
         const targetEntry = filteredEntries[focusedIndex];
         handleCopy(targetEntry);
         return;
       }
 
-      // Configurable Expand / collapse preview shortcut
-      if (matchesBinding(event, shortcuts.expand_preview) && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      // Configurable Expand / collapse preview shortcut (active feed only)
+      if (matchesBinding(event, shortcuts.expand_preview) && !showDeleted && focusedIndex !== null && filteredEntries[focusedIndex]) {
         event.preventDefault();
         const targetEntry = filteredEntries[focusedIndex];
         const content = stripLeadingEmptyLines(targetEntry.content);
@@ -747,8 +747,8 @@ export default function App() {
         return;
       }
 
-      // Configurable Toggle Pin shortcut
-      if (matchesBinding(event, shortcuts.toggle_pin) && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      // Configurable Toggle Pin shortcut (active feed only)
+      if (matchesBinding(event, shortcuts.toggle_pin) && !showDeleted && focusedIndex !== null && filteredEntries[focusedIndex]) {
         event.preventDefault();
         const targetEntry = filteredEntries[focusedIndex];
         handleTogglePin(targetEntry.id);
@@ -860,7 +860,7 @@ export default function App() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "ArrowDown" && filteredEntries.length > 0) {
+                  if (e.key === "ArrowDown" && !showDeleted && filteredEntries.length > 0) {
                     e.preventDefault();
                     searchInputRef.current?.blur();
                     setFocusedIndex(0);
