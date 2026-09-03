@@ -1,17 +1,21 @@
 // ----------
 // Custom Desktop Titlebar
-// Description: Native-style titlebar whose caption area is handled directly by Windows for immediate dragging and double-click maximize, with responsive custom controls.
+// Description: Native-style titlebar with manual window dragging and explicit double-click maximize, with responsive custom controls.
 // ----------
 
 import * as React from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window";
 import { Minus, Square, Copy as RestoreIcon, X, ClipboardList } from "lucide-react";
 import clipboxLogo from "@/assets/clipbox-logo.png";
 
 interface TitlebarProps {
   entriesCount?: number;
 }
+
+// Titlebar height is h-9 (36px). Restored windows are positioned so the
+// cursor lands mid-titlebar during a pull-down restore-drag.
+const TITLEBAR_GRAB_OFFSET = 18;
 
 export function Titlebar({ entriesCount }: TitlebarProps) {
   const [isMaximized, setIsMaximized] = React.useState(false);
@@ -65,6 +69,54 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
     });
   };
 
+  const handleToggleMaximize = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!appWindow) return;
+    toggleMaximize();
+  };
+
+  // Restores a maximized window under the cursor, then hands the in-progress
+  // press to the system move loop. toggleMaximize is used instead of unmaximize
+  // because only core:window:allow-toggle-maximize is granted (see capabilities).
+  const beginRestoreDrag = React.useCallback(
+    async (cursorX: number, cursorY: number) => {
+      if (!appWindow) return;
+
+      try {
+        await appWindow.toggleMaximize();
+        setIsMaximized(false);
+      } catch (err) {
+        console.warn("Could not restore window for drag", err);
+        void syncMaximizedState();
+        return;
+      }
+
+      // The window restores to its previous bounds, which is rarely under the
+      // cursor. Reposition it first so the held press grabs the titlebar
+      // instead of dragging air.
+      try {
+        const [size, scaleFactor] = await Promise.all([
+          appWindow.innerSize(),
+          appWindow.scaleFactor(),
+        ]);
+        const restoredWidth = size.width / scaleFactor;
+        await appWindow.setPosition(
+          new LogicalPosition(
+            Math.round(cursorX - restoredWidth / 2),
+            Math.max(0, Math.round(cursorY - TITLEBAR_GRAB_OFFSET))
+          )
+        );
+      } catch (err) {
+        console.warn("Could not reposition window for drag", err);
+      }
+
+      invoke("start_dragging").catch((err) => {
+        console.warn("Could not start window drag", err);
+      });
+    },
+    [appWindow, syncMaximizedState]
+  );
+
   const handleTitlebarMouseDown = (e: React.MouseEvent) => {
     if (
       e.button !== 0 ||
@@ -73,19 +125,46 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
       return;
     }
 
-    // Preserve the original instant-drag path. Tauri handles the second press
-    // on the marked drag region as a native maximize/restore action.
-    if (e.detail === 1 && appWindow) {
+    // Manual drag only: the titlebar deliberately has no data-tauri-drag-region
+    // (native drag regions eat mouse events on Windows, see tauri-apps/tauri#10767).
+    // Double-click is handled explicitly so the drag move loop can't swallow it.
+    if (e.detail === 2) {
+      handleToggleMaximize(e);
+      return;
+    }
+
+    if (e.detail !== 1 || !appWindow) return;
+
+    if (!isMaximized) {
       invoke("start_dragging").catch((err) => {
         console.warn("Could not start window drag", err);
       });
+      return;
     }
-  };
 
-  const handleToggleMaximize = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!appWindow) return;
-    toggleMaximize();
+    // Maximized: arm a pull-down restore. It only fires once the pointer
+    // actually moves, so a plain click never unmaximizes the window.
+    const startX = e.screenX;
+    const startY = e.screenY;
+    const cleanup = () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+    const handleMove = (moveEvent: MouseEvent) => {
+      if (moveEvent.buttons !== 1) {
+        cleanup();
+        return;
+      }
+      // Native restore-drag also needs a few pixels before it kicks in.
+      if (Math.hypot(moveEvent.screenX - startX, moveEvent.screenY - startY) <= 4) return;
+
+      cleanup();
+      void beginRestoreDrag(moveEvent.screenX, moveEvent.screenY);
+    };
+    const handleUp = () => cleanup();
+
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
   };
 
   const handleClose = async (e: React.MouseEvent) => {
@@ -100,13 +179,11 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
   return (
     <div
       data-window-chrome
-      data-tauri-drag-region
       onMouseDown={handleTitlebarMouseDown}
       className="h-9 w-full bg-card border-b flex items-center justify-between select-none z-[60] sticky top-0 cursor-default"
     >
       {/* App Branding (Draggable) */}
       <div
-        data-tauri-drag-region
         className="flex items-center gap-2 px-3 h-full select-none shrink-0"
       >
         <img
@@ -123,7 +200,6 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
 
       {/* Middle Drag Region with Centered Entries Count Badge */}
       <div
-        data-tauri-drag-region
         className="flex-1 h-full flex items-center justify-center cursor-default select-none"
       >
         {typeof entriesCount === "number" && (
