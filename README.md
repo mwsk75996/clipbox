@@ -42,6 +42,10 @@ Clipbox is a small desktop app that quietly watches your clipboard and saves eve
 
 Everything lives in a SQLite file on your machine (`clipbox.sqlite3` in your app-data folder). No accounts, no cloud, no telemetry phoning home. Your copied passwords stay your business.
 
+## Future
+
+Windows first — Linux and macOS ports are on the roadmap for later. The shared core crate already keeps storage platform-independent, so future frontends won't start from zero.
+
 ## License
 
 MIT — do whatever you want, just don't blame us when your clipboard history reveals your life choices.
