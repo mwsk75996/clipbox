@@ -1015,35 +1015,32 @@ export function ImageAnnotator({
             <div className="flex items-center bg-muted/50 p-0.5 rounded-lg border gap-0.5">
               <Button
                 variant={activeTool === "pen" ? "secondary" : "ghost"}
-                size="sm"
+                size="icon"
                 onClick={() => setActiveTool("pen")}
-                className="h-7 px-2.5 gap-1.5 text-xs font-medium"
+                className="size-8"
                 title="Ballpoint Pen (P)"
               >
-                <Pen className="size-3.5 text-primary" />
-                <span>Pen</span>
+                <Pen className="size-4 text-primary" />
               </Button>
 
               <Button
                 variant={activeTool === "highlighter" ? "secondary" : "ghost"}
-                size="sm"
+                size="icon"
                 onClick={() => setActiveTool("highlighter")}
-                className="h-7 px-2.5 gap-1.5 text-xs font-medium"
+                className="size-8"
                 title="Highlighter (H)"
               >
-                <Highlighter className="size-3.5 text-amber-500" />
-                <span>Highlighter</span>
+                <Highlighter className="size-4 text-amber-500" />
               </Button>
 
               <Button
                 variant={activeTool === "eraser" ? "secondary" : "ghost"}
-                size="sm"
+                size="icon"
                 onClick={() => setActiveTool("eraser")}
-                className="h-7 px-2.5 gap-1.5 text-xs font-medium"
+                className="size-8"
                 title="Eraser (E)"
               >
-                <Eraser className="size-3.5 text-rose-500" />
-                <span>Eraser</span>
+                <Eraser className="size-4 text-rose-500" />
               </Button>
 
               {/* Shapes Popover */}
@@ -1058,20 +1055,19 @@ export function ImageAnnotator({
                         ? "secondary"
                         : "ghost"
                     }
-                    size="sm"
-                    className="h-7 px-2.5 gap-1.5 text-xs font-medium"
-                    title="Shapes"
+                    size="icon"
+                    className="size-8"
+                    title="Shapes (Rectangle, Circle, Arrow, Line)"
                   >
                     {activeTool === "circle" ? (
-                      <Circle className="size-3.5" />
+                      <Circle className="size-4" />
                     ) : activeTool === "line" ? (
-                      <Minus className="size-3.5" />
+                      <Minus className="size-4" />
                     ) : activeTool === "arrow" ? (
-                      <MoveRight className="size-3.5" />
+                      <MoveRight className="size-4" />
                     ) : (
-                      <Square className="size-3.5" />
+                      <Square className="size-4" />
                     )}
-                    <span>Shapes</span>
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent align="start" className="w-48 p-2 space-y-1">
@@ -1152,13 +1148,12 @@ export function ImageAnnotator({
               {/* Crop Tool Toggle */}
               <Button
                 variant="ghost"
-                size="sm"
+                size="icon"
                 onClick={handleSelectCropTool}
-                className="h-7 px-2.5 gap-1.5 text-xs font-medium text-sky-400 hover:text-sky-300"
+                className="size-8 text-sky-400 hover:text-sky-300"
                 title="Crop Image (C)"
               >
-                <Crop className="size-3.5" />
-                <span>Crop</span>
+                <Crop className="size-4" />
               </Button>
             </div>
 
@@ -1313,7 +1308,7 @@ export function ImageAnnotator({
             variant={savedClip ? "default" : "outline"}
             size="sm"
             onClick={handleSaveAsNewClip}
-            className="h-8 gap-1.5 text-xs font-medium"
+            className="h-8 px-2.5 gap-1.5 text-xs font-medium"
             title="Save annotated image as a new Clipbox history entry"
           >
             {savedClip ? (
@@ -1321,28 +1316,27 @@ export function ImageAnnotator({
             ) : (
               <BookmarkPlus className="size-3.5 text-primary" />
             )}
-            <span>New Clip</span>
+            <span className="hidden sm:inline">New Clip</span>
           </Button>
 
           {/* Export: Save File to Disk */}
           <Button
             variant="outline"
-            size="sm"
+            size="icon"
             onClick={handleSaveAs}
             disabled={savingFile}
-            className="h-8 gap-1.5 text-xs font-medium"
+            className="size-8"
             title="Save as PNG file"
           >
-            <Download className="size-3.5" />
-            <span>Save As</span>
+            <Download className="size-4" />
           </Button>
 
           {/* Export: Copy to Clipboard */}
           <Button
-            variant={copied ? "default" : "default"}
+            variant="default"
             size="sm"
             onClick={handleCopy}
-            className="h-8 gap-1.5 text-xs font-medium"
+            className="h-8 px-3 gap-1.5 text-xs font-medium shadow-sm"
             title="Copy flattened image to clipboard"
           >
             {copied ? (
