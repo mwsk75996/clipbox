@@ -3,11 +3,12 @@
 use std::path::PathBuf;
 
 use clipbox_core::{ClipboardEntry as CoreClipboardEntry, ClipboardStore};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 mod autostart;
 mod clipboard;
+mod file_clipboard;
 mod image_clipboard;
 mod source;
 
@@ -15,7 +16,7 @@ struct AppState {
     database_path: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipboardEntry {
     pub id: i64,
@@ -29,6 +30,7 @@ pub struct ClipboardEntry {
     pub entry_type: String,
     pub image_data: Option<String>,
     pub image_dimensions: Option<String>,
+    pub files_data: Option<String>,
 }
 
 impl From<CoreClipboardEntry> for ClipboardEntry {
@@ -45,6 +47,7 @@ impl From<CoreClipboardEntry> for ClipboardEntry {
             entry_type: entry.entry_type,
             image_data: entry.image_data,
             image_dimensions: entry.image_dimensions,
+            files_data: entry.files_data,
         }
     }
 }
@@ -350,6 +353,41 @@ fn copy_image_to_clipboard(data_url: String) -> Result<(), String> {
 }
 
 // ----------
+// Native File Clipboard Copy Command
+// Description: Restores CF_HDROP file descriptors to the Windows clipboard so files can be pasted directly into File Explorer or Desktop.
+// ----------
+
+#[tauri::command]
+fn copy_files_to_clipboard(paths: Vec<String>) -> Result<(), String> {
+    if !paths.is_empty() {
+        let items: Vec<file_clipboard::FileItem> = paths
+            .iter()
+            .map(|p| {
+                let (size, is_directory) = match std::fs::metadata(p) {
+                    Ok(m) => (m.len(), m.is_dir()),
+                    Err(_) => (0, false),
+                };
+                let name = std::path::Path::new(p)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| p.clone());
+                file_clipboard::FileItem {
+                    name,
+                    path: p.clone(),
+                    extension: String::new(),
+                    size,
+                    is_directory,
+                }
+            })
+            .collect();
+        let hash = file_clipboard::compute_files_hash(&items);
+        clipboard::mark_internal_copy_files(hash);
+    }
+
+    file_clipboard::write_clipboard_files(&paths)
+}
+
+// ----------
 // Native Image Save Dialog Command
 // Description: Decodes PNG data URL and displays standard Windows Save As dialog with .png filter, writing image bytes directly to the chosen local disk path.
 // ----------
@@ -564,6 +602,7 @@ pub fn run() {
             set_retention_limit,
             restart_app,
             save_image_to_file,
+            copy_files_to_clipboard,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clipbox");

@@ -1,6 +1,6 @@
 // ----------
 // Clipboard Monitoring Service
-// Description: Event-driven Windows clipboard monitor utilizing AddClipboardFormatListener (WM_CLIPBOARDUPDATE) with polling fallback, eliminating lock contention on Snipping Tool / PrintScreen while capturing text and multi-format images.
+// Description: Event-driven Windows clipboard monitor utilizing AddClipboardFormatListener (WM_CLIPBOARDUPDATE) with polling fallback, eliminating lock contention on Snipping Tool / PrintScreen while capturing files (CF_HDROP), text, and multi-format images.
 // ----------
 
 use std::path::PathBuf;
@@ -13,15 +13,17 @@ use arboard::Clipboard;
 use clipbox_core::ClipboardStore;
 use tauri::Emitter;
 
+use crate::file_clipboard;
 use crate::image_clipboard;
 use crate::source;
 
 static LAST_INTERNAL_COPIED_TEXT: Mutex<Option<String>> = Mutex::new(None);
 static LAST_INTERNAL_COPIED_IMAGE_HASH: AtomicU64 = AtomicU64::new(0);
+static LAST_INTERNAL_COPIED_FILES_HASH: AtomicU64 = AtomicU64::new(0);
 
 // ----------
 // Internal Clipboard Copy Tracking
-// Description: Records content copied to the OS clipboard by Clipbox user actions (e.g. clicking the Copy button on an entry card) so the background monitor does not create duplicate entries in history, while ensuring external screenshots or copies taken while Clipbox is focused are always captured.
+// Description: Records content copied to the OS clipboard by Clipbox user actions (e.g. clicking the Copy button on an entry card) so the background monitor does not create duplicate entries in history, while ensuring external screenshots, files, or copies taken while Clipbox is focused are always captured.
 // ----------
 
 pub fn mark_internal_copy_text(text: &str) {
@@ -33,6 +35,10 @@ pub fn mark_internal_copy_text(text: &str) {
 
 pub fn mark_internal_copy_image(hash: u64) {
     LAST_INTERNAL_COPIED_IMAGE_HASH.store(hash, Ordering::SeqCst);
+}
+
+pub fn mark_internal_copy_files(hash: u64) {
+    LAST_INTERNAL_COPIED_FILES_HASH.store(hash, Ordering::SeqCst);
 }
 
 /// Start the background clipboard monitor.
@@ -82,17 +88,20 @@ fn monitor_windows(database_path: PathBuf, app: tauri::AppHandle) {
         }
     };
 
+    let mut previous_files_hash: Option<u64> = file_clipboard::read_clipboard_files().map(|f| f.hash);
     let mut previous_text: Option<String> = None;
     let mut previous_image_hash: Option<u64> = None;
 
     // Read baseline so existing clipboard contents aren't recorded just because Clipbox started
-    if let Some(img) = image_clipboard::read_clipboard_image() {
-        previous_image_hash = Some(img.raw_bytes_sample_hash);
-    } else if let Ok(mut cb) = Clipboard::new() {
-        previous_text = cb
-            .get_text()
-            .ok()
-            .map(|t| clipbox_core::strip_leading_empty_lines(&t).to_string());
+    if previous_files_hash.is_none() {
+        if let Some(img) = image_clipboard::read_clipboard_image() {
+            previous_image_hash = Some(img.raw_bytes_sample_hash);
+        } else if let Ok(mut cb) = Clipboard::new() {
+            previous_text = cb
+                .get_text()
+                .ok()
+                .map(|t| clipbox_core::strip_leading_empty_lines(&t).to_string());
+        }
     }
 
     unsafe extern "system" fn wndproc(
@@ -155,10 +164,16 @@ fn monitor_windows(database_path: PathBuf, app: tauri::AppHandle) {
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             if msg.message == WM_CLIPBOARDUPDATE {
-                // Sleep briefly (25ms) so the source application (e.g. Snipping Tool or browser)
+                // Sleep briefly (25ms) so the source application (e.g. Snipping Tool or File Explorer)
                 // has fully completed writing its payload and closed the clipboard handle.
                 thread::sleep(Duration::from_millis(25));
-                check_clipboard(&store, &app, &mut previous_text, &mut previous_image_hash);
+                check_clipboard(
+                    &store,
+                    &app,
+                    &mut previous_files_hash,
+                    &mut previous_text,
+                    &mut previous_image_hash,
+                );
             }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
@@ -183,38 +198,89 @@ fn monitor_polling(database_path: PathBuf, app: tauri::AppHandle) {
         }
     };
 
+    let mut previous_files_hash: Option<u64> = file_clipboard::read_clipboard_files().map(|f| f.hash);
     let mut previous_text: Option<String> = None;
     let mut previous_image_hash: Option<u64> = None;
 
-    if let Some(img) = image_clipboard::read_clipboard_image() {
-        previous_image_hash = Some(img.raw_bytes_sample_hash);
-    } else if let Ok(mut cb) = Clipboard::new() {
-        previous_text = cb
-            .get_text()
-            .ok()
-            .map(|t| clipbox_core::strip_leading_empty_lines(&t).to_string());
+    if previous_files_hash.is_none() {
+        if let Some(img) = image_clipboard::read_clipboard_image() {
+            previous_image_hash = Some(img.raw_bytes_sample_hash);
+        } else if let Ok(mut cb) = Clipboard::new() {
+            previous_text = cb
+                .get_text()
+                .ok()
+                .map(|t| clipbox_core::strip_leading_empty_lines(&t).to_string());
+        }
     }
 
     loop {
-        check_clipboard(&store, &app, &mut previous_text, &mut previous_image_hash);
+        check_clipboard(
+            &store,
+            &app,
+            &mut previous_files_hash,
+            &mut previous_text,
+            &mut previous_image_hash,
+        );
         thread::sleep(Duration::from_millis(300));
     }
 }
 
 // ----------
 // Unified Clipboard Evaluation
-// Description: Inspects the clipboard for new image or text entries, attributes source tags, prevents duplicate internal copies, and persists to SQLite.
+// Description: Inspects the clipboard for new file descriptors (CF_HDROP), image bitmaps, or text entries, attributes source tags, prevents duplicate internal copies, and persists to SQLite.
 // ----------
 
 fn check_clipboard(
     store: &ClipboardStore,
     app: &tauri::AppHandle,
+    previous_files_hash: &mut Option<u64>,
     previous_text: &mut Option<String>,
     previous_image_hash: &mut Option<u64>,
 ) {
+    // 1. Check for file list content (CF_HDROP) first
+    if let Some(files) = file_clipboard::read_clipboard_files() {
+        if *previous_files_hash != Some(files.hash) {
+            let is_internal_copy =
+                LAST_INTERNAL_COPIED_FILES_HASH.swap(0, Ordering::SeqCst) == files.hash;
+
+            if !is_internal_copy {
+                let metadata = source::current();
+                match store.add_file_entry(&files.display_summary, &files.files_json, &metadata) {
+                    Ok(id) => {
+                        eprintln!("stored clipboard file entry {id}");
+                        let entry = crate::ClipboardEntry {
+                            id,
+                            content: files.display_summary,
+                            copied_at: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as i64,
+                            source_app: metadata.source_app,
+                            source_process: metadata.source_process,
+                            window_title: metadata.window_title,
+                            app_icon: metadata.app_icon,
+                            is_pinned: false,
+                            entry_type: "file".into(),
+                            image_data: None,
+                            image_dimensions: None,
+                            files_data: Some(files.files_json),
+                        };
+                        let _ = app.emit("clipboard://new-entry", entry);
+                    }
+                    Err(error) => eprintln!("could not store clipboard file: {error}"),
+                }
+            }
+
+            *previous_files_hash = Some(files.hash);
+            *previous_image_hash = None;
+            *previous_text = None;
+        }
+        return;
+    }
+
     let mut handled_image = false;
 
-    // 1. Check for image content first using robust native Windows Win32 / CF_DIB / PNG
+    // 2. Check for image content second using robust native Windows Win32 / CF_DIB / PNG
     if let Some(img) = image_clipboard::read_clipboard_image() {
         if *previous_image_hash != Some(img.raw_bytes_sample_hash) {
             // Check if this image was copied internally by Clipbox's Copy button
@@ -264,6 +330,7 @@ fn check_clipboard(
                             entry_type: "image".into(),
                             image_data: Some(img.data_url),
                             image_dimensions: Some(img.dimensions),
+                            files_data: None,
                         };
                         let _ = app.emit("clipboard://new-entry", entry);
                     }
@@ -272,12 +339,13 @@ fn check_clipboard(
             }
 
             *previous_image_hash = Some(img.raw_bytes_sample_hash);
+            *previous_files_hash = None;
             *previous_text = None;
         }
         handled_image = true;
     }
 
-    // 2. If no image was found on the clipboard, check for text content
+    // 3. If no file or image was found on the clipboard, check for text content
     if !handled_image {
         if let Ok(mut clipboard) = Clipboard::new() {
             if let Ok(text) = clipboard.get_text() {
@@ -319,6 +387,7 @@ fn check_clipboard(
                                 entry_type: "text".into(),
                                 image_data: None,
                                 image_dimensions: None,
+                                files_data: None,
                             };
                             let _ = app.emit("clipboard://new-entry", entry);
                         }
@@ -328,6 +397,7 @@ fn check_clipboard(
 
                 *previous_text = Some(cleaned.to_string());
                 *previous_image_hash = None;
+                *previous_files_hash = None;
             }
         }
     }

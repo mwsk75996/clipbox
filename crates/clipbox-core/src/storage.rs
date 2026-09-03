@@ -31,6 +31,7 @@ pub struct ClipboardEntry {
     pub entry_type: String,
     pub image_data: Option<String>,
     pub image_dimensions: Option<String>,
+    pub files_data: Option<String>,
 }
 
 /// SQLite-backed storage shared by Clipbox frontends.
@@ -57,7 +58,8 @@ impl ClipboardStore {
                 is_pinned INTEGER NOT NULL DEFAULT 0,
                 entry_type TEXT NOT NULL DEFAULT 'text',
                 image_data TEXT,
-                image_dimensions TEXT
+                image_dimensions TEXT,
+                files_data TEXT
             );
             CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
@@ -75,6 +77,7 @@ impl ClipboardStore {
             ("entry_type", "entry_type TEXT NOT NULL DEFAULT 'text'"),
             ("image_data", "image_data TEXT"),
             ("image_dimensions", "image_dimensions TEXT"),
+            ("files_data", "files_data TEXT"),
         ] {
             if !Self::has_column(&connection, column)? {
                 connection.execute(
@@ -200,6 +203,50 @@ impl ClipboardStore {
     }
 
     // ----------
+    // File Clipboard Storage Entry
+    // Description: Persists copied file descriptors, summary text, and structured JSON metadata (names, paths, sizes, extensions) into SQLite.
+    // ----------
+    pub fn add_file_entry(
+        &self,
+        display_summary: &str,
+        files_json: &str,
+        metadata: &ClipboardMetadata,
+    ) -> Result<i64> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        self.connection.execute(
+            "INSERT INTO clipboard_entries (
+                content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, files_data
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 'file', ?7)",
+            params![
+                display_summary,
+                now,
+                metadata.source_app.as_deref(),
+                metadata.source_process.as_deref(),
+                metadata.window_title.as_deref(),
+                metadata.app_icon.as_deref(),
+                files_json,
+            ],
+        )?;
+
+        let last_id = self.connection.last_insert_rowid();
+
+        // Enforce retention limit if configured
+        if let Ok(Some(limit_str)) = self.get_setting("retention_limit") {
+            if let Ok(limit) = limit_str.parse::<usize>() {
+                if limit > 0 {
+                    let _ = self.prune_entries(limit);
+                }
+            }
+        }
+
+        Ok(last_id)
+    }
+
+    // ----------
     // Retention Limit Pruning
     // Description: Deletes surplus records exceeding the configured history retention limit, keeping only the newest unpinned entries. Pinned entries are preserved.
     // ----------
@@ -225,7 +272,7 @@ impl ClipboardStore {
     /// Return the newest stored entries first, prioritizing pinned entries.
     pub fn recent_entries(&self, limit: u32) -> Result<Vec<ClipboardEntry>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions
+            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data
              FROM clipboard_entries
              ORDER BY is_pinned DESC, id DESC
              LIMIT ?1",
@@ -244,6 +291,7 @@ impl ClipboardStore {
                 entry_type: row.get(8).unwrap_or_else(|_| "text".into()),
                 image_data: row.get(9)?,
                 image_dimensions: row.get(10)?,
+                files_data: row.get(11)?,
             })
         })?;
 
@@ -645,5 +693,27 @@ mod tests {
         assert_eq!(entries[0].image_data.as_deref(), Some(fake_data_url));
         assert_eq!(entries[0].image_dimensions.as_deref(), Some("800x600"));
         assert_eq!(entries[0].source_app.as_deref(), Some("SnippingTool"));
+    }
+
+    #[test]
+    fn stores_and_retrieves_file_entry() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        let metadata = ClipboardMetadata {
+            source_app: Some("File Explorer".into()),
+            source_process: Some("explorer.exe".into()),
+            window_title: Some("Documents".into()),
+            app_icon: None,
+        };
+
+        let fake_json = r#"[{"name":"test.txt","path":"C:\\test.txt","extension":"txt","size":128,"is_directory":false}]"#;
+        let id = store.add_file_entry("test.txt (128 B)", fake_json, &metadata).unwrap();
+        assert_eq!(id, 1);
+
+        let entries = store.recent_entries(10).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].entry_type, "file");
+        assert_eq!(entries[0].content, "test.txt (128 B)");
+        assert_eq!(entries[0].files_data.as_deref(), Some(fake_json));
+        assert_eq!(entries[0].source_app.as_deref(), Some("File Explorer"));
     }
 }

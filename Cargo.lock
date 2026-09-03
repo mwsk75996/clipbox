@@ -366,6 +366,7 @@ dependencies = [
  "clipbox-core",
  "image",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "windows",
