@@ -20,6 +20,7 @@ import {
   Camera,
   ZoomIn,
   Files,
+  PauseCircle,
 } from "lucide-react";
 import { startOfDay, endOfDay } from "date-fns";
 import type { DateRange } from "react-day-picker";
@@ -51,7 +52,12 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { SettingsModal } from "@/components/settings-modal";
+import {
+  SettingsModal,
+  DEFAULT_SHORTCUTS,
+  matchesBinding,
+  type ShortcutSettings,
+} from "@/components/settings-modal";
 
 export interface ClipboardEntry {
   id: number;
@@ -137,22 +143,43 @@ export default function App() {
   const [isFilterOpen, setIsFilterOpen] = React.useState(false);
   const [previewEntry, setPreviewEntry] = React.useState<ClipboardEntry | null>(null);
 
+  // Keyboard shortcuts and privacy monitoring state
+  const [shortcuts, setShortcuts] = React.useState<ShortcutSettings>(DEFAULT_SHORTCUTS);
+  const [isMonitoringPaused, setIsMonitoringPaused] = React.useState<boolean>(false);
+
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const deletedIdsRef = React.useRef<Set<number>>(new Set());
   const lastMousePosRef = React.useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const lastKeyboardNavTimeRef = React.useRef<number>(0);
 
-  // Restore Always on Top preference on startup
+  // Restore Always on Top, Shortcuts, and Monitoring state on startup
   React.useEffect(() => {
-    const saved = localStorage.getItem("clipbox:alwaysOnTop");
-    if (saved === "true") {
-      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+      const saved = localStorage.getItem("clipbox:alwaysOnTop");
+      if (saved === "true") {
         invoke("set_always_on_top", { alwaysOnTop: true }).catch((err) =>
           console.warn("Could not restore always on top setting", err)
         );
       }
+      invoke<ShortcutSettings>("get_shortcut_settings")
+        .then(setShortcuts)
+        .catch(console.error);
+      invoke<boolean>("is_monitoring_paused")
+        .then(setIsMonitoringPaused)
+        .catch(console.error);
     }
   }, []);
+
+  const handleResumeMonitoring = async () => {
+    setIsMonitoringPaused(false);
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("set_monitoring_paused", { paused: false });
+      }
+    } catch (err) {
+      console.error("Failed to resume monitoring", err);
+    }
+  };
 
   // Fetch clipboard entries from Tauri IPC with in-flight deletion protection
   const fetchEntries = React.useCallback(async () => {
@@ -176,13 +203,16 @@ export default function App() {
     return () => window.removeEventListener("focus", handleFocus);
   }, [fetchEntries]);
 
-  // Real-time clipboard capture listener for instantaneous UI updates
+  // Real-time clipboard capture and status event listeners
   React.useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    let unlistenNew: (() => void) | undefined;
+    let unlistenBump: (() => void) | undefined;
+    let unlistenPause: (() => void) | undefined;
+
     const setupListener = async () => {
       try {
         if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-          unlisten = await listen<ClipboardEntry>("clipboard://new-entry", (event) => {
+          unlistenNew = await listen<ClipboardEntry>("clipboard://new-entry", (event) => {
             if (deletedIdsRef.current.has(event.payload.id)) {
               return;
             }
@@ -193,14 +223,30 @@ export default function App() {
               return [event.payload, ...prev];
             });
           });
+
+          unlistenBump = await listen<ClipboardEntry>("clipboard://entry-bumped", (event) => {
+            if (deletedIdsRef.current.has(event.payload.id)) {
+              return;
+            }
+            setEntries((prev) => {
+              const filtered = prev.filter((e) => e.id !== event.payload.id);
+              return [event.payload, ...filtered];
+            });
+          });
+
+          unlistenPause = await listen<boolean>("clipboard://monitoring-paused-changed", (event) => {
+            setIsMonitoringPaused(event.payload);
+          });
         }
       } catch (err) {
-        console.warn("Could not register clipboard event listener", err);
+        console.warn("Could not register clipboard event listeners", err);
       }
     };
     setupListener();
     return () => {
-      if (unlisten) unlisten();
+      if (unlistenNew) unlistenNew();
+      if (unlistenBump) unlistenBump();
+      if (unlistenPause) unlistenPause();
     };
   }, []);
 
@@ -256,7 +302,7 @@ export default function App() {
       return matchesSearch && matchesApp && matchesDate && matchesType;
     }).sort((a, b) => {
       if (Boolean(a.isPinned) === Boolean(b.isPinned)) {
-        return b.id - a.id;
+        return b.copiedAt - a.copiedAt || b.id - a.id;
       }
       return a.isPinned ? -1 : 1;
     });
@@ -410,8 +456,8 @@ export default function App() {
 
       const hasOpenDialog = Boolean(document.querySelector('[role="dialog"]'));
 
-      // Ctrl+F focuses and selects inside the app search bar
-      if ((event.metaKey || event.ctrlKey) && key === "f") {
+      // Configurable Focus Search Bar shortcut
+      if (matchesBinding(event, shortcuts.focus_search)) {
         event.preventDefault();
         searchInputRef.current?.focus();
         searchInputRef.current?.select();
@@ -434,8 +480,8 @@ export default function App() {
         return;
       }
 
-      // Escape key clears search/filters, un-focuses, or hides window to tray
-      if (event.key === "Escape") {
+      // Configurable Clear / Escape shortcut
+      if (matchesBinding(event, shortcuts.clear_escape)) {
         if (searchQuery || hasActiveFilters) {
           clearFilters();
           setFocusedIndex(null);
@@ -447,8 +493,8 @@ export default function App() {
         return;
       }
 
-      // Arrow Down: Navigate downward through feed
-      if (event.key === "ArrowDown") {
+      // Configurable Nav Down shortcut
+      if (matchesBinding(event, shortcuts.nav_down)) {
         event.preventDefault();
         lastKeyboardNavTimeRef.current = Date.now();
         if (filteredEntries.length === 0) return;
@@ -459,8 +505,8 @@ export default function App() {
         return;
       }
 
-      // Arrow Up: Navigate upward or return to search bar
-      if (event.key === "ArrowUp") {
+      // Configurable Nav Up shortcut
+      if (matchesBinding(event, shortcuts.nav_up)) {
         event.preventDefault();
         lastKeyboardNavTimeRef.current = Date.now();
         setFocusedIndex((prev) => {
@@ -473,16 +519,16 @@ export default function App() {
         return;
       }
 
-      // Enter: Copy focused entry
-      if (event.key === "Enter" && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      // Configurable Copy focused entry shortcut
+      if (matchesBinding(event, shortcuts.copy_entry) && focusedIndex !== null && filteredEntries[focusedIndex]) {
         event.preventDefault();
         const targetEntry = filteredEntries[focusedIndex];
         handleCopy(targetEntry);
         return;
       }
 
-      // Space: Toggle preview expansion for multiline text
-      if (event.key === " " && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      // Configurable Expand / collapse preview shortcut
+      if (matchesBinding(event, shortcuts.expand_preview) && focusedIndex !== null && filteredEntries[focusedIndex]) {
         event.preventDefault();
         const targetEntry = filteredEntries[focusedIndex];
         const lines = stripLeadingEmptyLines(targetEntry.content).split(/\r?\n/);
@@ -492,8 +538,8 @@ export default function App() {
         return;
       }
 
-      // Delete: Remove focused entry without flicker
-      if (event.key === "Delete" && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      // Configurable Delete focused entry shortcut
+      if (matchesBinding(event, shortcuts.delete_entry) && focusedIndex !== null && filteredEntries[focusedIndex]) {
         event.preventDefault();
         const targetEntry = filteredEntries[focusedIndex];
         handleDelete(targetEntry.id);
@@ -503,8 +549,8 @@ export default function App() {
         return;
       }
 
-      // P: Toggle pin
-      if ((event.key === "p" || event.key === "P") && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      // Configurable Toggle Pin shortcut
+      if (matchesBinding(event, shortcuts.toggle_pin) && focusedIndex !== null && filteredEntries[focusedIndex]) {
         event.preventDefault();
         const targetEntry = filteredEntries[focusedIndex];
         handleTogglePin(targetEntry.id);
@@ -560,7 +606,7 @@ export default function App() {
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("pointerdown", handlePointerDown);
     };
-  }, [filteredEntries, focusedIndex, previewEntry, searchQuery, hasActiveFilters]);
+  }, [filteredEntries, focusedIndex, previewEntry, searchQuery, hasActiveFilters, shortcuts]);
 
   // Handle card expansion while preventing collapse when selecting/marking text
   const handleCardClick = (
@@ -614,7 +660,7 @@ export default function App() {
                 className="pl-9 pr-14 bg-background h-9"
               />
               <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded border bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground select-none pointer-events-none">
-                Ctrl F
+                {shortcuts.focus_search?.label || "Ctrl F"}
               </kbd>
             </div>
 
@@ -698,8 +744,27 @@ export default function App() {
               </PopoverContent>
             </Popover>
 
+            {isMonitoringPaused && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleResumeMonitoring}
+                className="gap-1.5 shrink-0 h-9 text-amber-600 dark:text-amber-400 border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-xs font-medium animate-pulse"
+                title="Clipboard capture is currently paused. Click to resume."
+              >
+                <PauseCircle className="size-4" />
+                Paused
+              </Button>
+            )}
+
             <ThemeToggle />
-            <SettingsModal onClearHistory={() => setEntries([])} />
+            <SettingsModal
+              onClearHistory={() => setEntries([])}
+              shortcuts={shortcuts}
+              onShortcutsChange={setShortcuts}
+              isMonitoringPaused={isMonitoringPaused}
+              onMonitoringPausedChange={setIsMonitoringPaused}
+            />
           </div>
         </header>
 
