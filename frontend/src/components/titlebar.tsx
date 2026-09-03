@@ -1,10 +1,11 @@
 // ----------
 // Custom Desktop Titlebar
-// Description: Native-style draggable window titlebar supporting app branding, centered entries count badge, double-click to maximize, minimize, maximize/restore, close, and programmatic window dragging.
+// Description: Native-style titlebar using Tauri drag regions for dragging and double-click maximize, with responsive window controls and debounced maximized-state synchronization.
 // ----------
 
 import * as React from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, Square, Copy as RestoreIcon, X, ClipboardList } from "lucide-react";
 import clipboxLogo from "@/assets/clipbox-logo.png";
 
@@ -14,82 +15,57 @@ interface TitlebarProps {
 
 export function Titlebar({ entriesCount }: TitlebarProps) {
   const [isMaximized, setIsMaximized] = React.useState(false);
+  const appWindow = React.useMemo(() => {
+    if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+      return getCurrentWindow();
+    }
+    return null;
+  }, []);
 
-  const checkMaximized = React.useCallback(async () => {
+  const syncMaximizedState = React.useCallback(async () => {
+    if (!appWindow) return;
+
     try {
-      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-        const max = await invoke<boolean>("is_window_maximized");
-        setIsMaximized(max);
-      }
+      setIsMaximized(await appWindow.isMaximized());
     } catch {
       // Fallback for web preview
     }
-  }, []);
+  }, [appWindow]);
 
   React.useEffect(() => {
-    checkMaximized();
-    window.addEventListener("resize", checkMaximized);
-    return () => window.removeEventListener("resize", checkMaximized);
-  }, [checkMaximized]);
+    void syncMaximizedState();
 
-  const isPointerDownRef = React.useRef(false);
-  const dragStartedRef = React.useRef(false);
-  const startPosRef = React.useRef({ x: 0, y: 0 });
+    let resizeTimer: number | undefined;
+    const handleResize = () => {
+      window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        void syncMaximizedState();
+      }, 120);
+    };
 
-  const handlePointerDown = (e: React.PointerEvent) => {
-    // Left click only
-    if (e.button !== 0) return;
-    // Don't drag from buttons
-    if ((e.target as HTMLElement).closest("button")) return;
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      window.clearTimeout(resizeTimer);
+    };
+  }, [syncMaximizedState]);
 
-    isPointerDownRef.current = true;
-    dragStartedRef.current = false;
-    startPosRef.current = { x: e.screenX, y: e.screenY };
-  };
-
-  const handlePointerMove = (e: React.PointerEvent) => {
-    if (!isPointerDownRef.current || dragStartedRef.current) return;
-
-    const dx = e.screenX - startPosRef.current.x;
-    const dy = e.screenY - startPosRef.current.y;
-    // Threshold of 4 pixels to distinguish click from intentional drag
-    if (Math.hypot(dx, dy) > 4) {
-      dragStartedRef.current = true;
-      isPointerDownRef.current = false;
-      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-        invoke("start_dragging").catch(() => {});
-      }
-    }
-  };
-
-  const handlePointerUp = () => {
-    isPointerDownRef.current = false;
-    dragStartedRef.current = false;
-  };
-
-  const handleDoubleClick = (e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest("button")) return;
-    if (dragStartedRef.current) return;
-    handleToggleMaximize();
-  };
-
-  const handleMinimize = async (e: React.MouseEvent) => {
+  const handleMinimize = (e: React.MouseEvent) => {
     e.stopPropagation();
-    try {
-      await invoke("minimize_window");
-    } catch (err) {
+    appWindow?.minimize().catch((err) => {
       console.warn("Could not minimize window", err);
-    }
+    });
   };
 
-  const handleToggleMaximize = async (e?: React.MouseEvent) => {
-    e?.stopPropagation();
-    try {
-      await invoke("toggle_maximize_window");
-      await checkMaximized();
-    } catch (err) {
+  const handleToggleMaximize = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!appWindow) return;
+
+    setIsMaximized((current) => !current);
+    appWindow.toggleMaximize().catch((err) => {
       console.warn("Could not toggle maximize", err);
-    }
+      void syncMaximizedState();
+    });
   };
 
   const handleClose = async (e: React.MouseEvent) => {
@@ -103,10 +79,8 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
 
   return (
     <div
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onDoubleClick={handleDoubleClick}
+      data-window-chrome
+      data-tauri-drag-region="deep"
       className="h-9 w-full bg-card border-b flex items-center justify-between select-none z-[60] sticky top-0 cursor-default"
     >
       {/* App Branding (Draggable) */}

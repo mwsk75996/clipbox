@@ -113,21 +113,12 @@ fn toggle_pinned(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, Str
 
 // ----------
 // Window Control Commands
-// Description: IPC commands for custom titlebar actions including minimize, toggle maximize, close, and query maximized state.
+// Description: IPC commands retained for the startup fallback page and hide-to-tray lifecycle.
 // ----------
 
 #[tauri::command]
 fn minimize_window(window: tauri::Window) -> Result<(), String> {
     window.minimize().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn toggle_maximize_window(window: tauri::Window) -> Result<(), String> {
-    if window.is_maximized().unwrap_or(false) {
-        window.unmaximize().map_err(|error| error.to_string())
-    } else {
-        window.maximize().map_err(|error| error.to_string())
-    }
 }
 
 #[tauri::command]
@@ -151,37 +142,6 @@ fn show_window(window: tauri::Window) -> Result<(), String> {
 #[tauri::command]
 fn exit_app(app: tauri::AppHandle) {
     app.exit(0);
-}
-
-#[tauri::command]
-fn start_dragging(window: tauri::Window) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-        use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
-        use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN};
-
-        if let Ok(raw_hwnd) = window.hwnd() {
-            unsafe {
-                let _ = ReleaseCapture();
-                let hwnd = HWND(raw_hwnd.0 as _);
-                SendMessageW(
-                    hwnd,
-                    WM_NCLBUTTONDOWN,
-                    Some(WPARAM(HTCAPTION as usize)),
-                    Some(LPARAM(0)),
-                );
-                return Ok(());
-            }
-        }
-    }
-
-    window.start_dragging().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn is_window_maximized(window: tauri::Window) -> Result<bool, String> {
-    window.is_maximized().map_err(|error| error.to_string())
 }
 
 // ----------
@@ -995,15 +955,12 @@ pub fn run() {
             delete_entry,
             toggle_pinned,
             minimize_window,
-            toggle_maximize_window,
             close_window,
             hide_window,
             show_window,
             exit_app,
             copy_to_clipboard,
             copy_image_to_clipboard,
-            start_dragging,
-            is_window_maximized,
             set_always_on_top,
             is_always_on_top,
             is_autostart_enabled,

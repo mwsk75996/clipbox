@@ -613,8 +613,17 @@ export default function App() {
       event.preventDefault();
     };
 
-    // Moving or clicking the mouse clears the keyboard navigation highlight line
+    // Moving or clicking within app content clears the keyboard navigation highlight line.
+    // Window chrome is excluded so native window actions never trigger a feed rerender first.
+    const isWindowChromeEvent = (event: Event) =>
+      event.target instanceof Element &&
+      event.target.closest("[data-window-chrome]") !== null;
+
     const handleMouseMove = (event: MouseEvent) => {
+      if (focusedIndex === null || isWindowChromeEvent(event)) {
+        return;
+      }
+
       if (
         event.clientX === lastMousePosRef.current.x &&
         event.clientY === lastMousePosRef.current.y
@@ -627,11 +636,13 @@ export default function App() {
         return;
       }
 
-      setFocusedIndex((prev) => (prev !== null ? null : prev));
+      setFocusedIndex(null);
     };
 
-    const handlePointerDown = () => {
-      setFocusedIndex((prev) => (prev !== null ? null : prev));
+    const handlePointerDown = (event: PointerEvent) => {
+      if (focusedIndex !== null && !isWindowChromeEvent(event)) {
+        setFocusedIndex(null);
+      }
     };
 
     window.addEventListener("keydown", handleKeyDown);
