@@ -47,7 +47,9 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
 
     // Programmatically start window dragging via native Tauri IPC
     try {
-      invoke("start_dragging");
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        invoke("start_dragging").catch(() => {});
+      }
     } catch (err) {
       console.warn("Could not start dragging", err);
     }

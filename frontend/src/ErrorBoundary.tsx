@@ -52,6 +52,17 @@ export class ErrorBoundary extends Component<Props, State> {
 
   handleUnhandledRejection = (event: PromiseRejectionEvent) => {
     const reason = event.reason;
+    const reasonStr = String(reason?.message || reason || "");
+
+    // Ignore benign non-fatal events (such as window drag release or abort errors)
+    if (
+      reasonStr.includes("start_dragging") ||
+      reasonStr.includes("cancelled") ||
+      reasonStr.includes("AbortError")
+    ) {
+      return;
+    }
+
     const error =
       reason instanceof Error
         ? reason
