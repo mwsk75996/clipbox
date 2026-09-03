@@ -943,7 +943,7 @@ export function ImageAnnotator({
   };
 
   return (
-    <div className="flex flex-col h-full w-full bg-background select-none overflow-hidden animate-in fade-in-0 duration-200">
+    <div className="relative flex flex-col h-full w-full bg-background select-none overflow-hidden animate-in fade-in-0 duration-200">
       {/* Top Editor Command Bar */}
       <div
         data-tauri-drag-region
@@ -1282,11 +1282,6 @@ export function ImageAnnotator({
 
         {/* Right: History & Export Actions */}
         <div className="flex items-center gap-1.5 shrink-0">
-          {statusMessage && (
-            <span className="text-xs font-medium text-emerald-400 animate-in fade-in-0 duration-150 mr-2">
-              {statusMessage}
-            </span>
-          )}
 
           <Button
             variant="ghost"
@@ -1438,6 +1433,16 @@ export function ImageAnnotator({
           <span><kbd className="px-1 py-0.5 bg-muted rounded border text-[10px] font-mono">Esc</kbd> Exit</span>
         </div>
       </div>
+
+      {/* Floating Status Toast Notification */}
+      {statusMessage && (
+        <div className="absolute bottom-12 left-1/2 -translate-x-1/2 z-50 pointer-events-none animate-in fade-in-0 slide-in-from-bottom-2 duration-200">
+          <div className="bg-popover/95 backdrop-blur-md text-popover-foreground border shadow-xl rounded-full px-4 py-2 flex items-center gap-2 text-xs font-medium">
+            <Check className="size-4 text-emerald-400 shrink-0" />
+            <span>{statusMessage}</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
