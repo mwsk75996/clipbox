@@ -301,7 +301,7 @@ export function ImageLightbox({
 
       {/* Main Image Stage */}
       <div
-        className="flex-1 overflow-auto flex items-center justify-center p-4 select-none"
+        className="flex-1 min-h-0 overflow-auto flex items-center justify-center py-10 px-8 select-none"
         onClick={onClose}
       >
         <div
@@ -329,7 +329,7 @@ export function ImageLightbox({
               className={`transition-all duration-150 rounded-lg select-none ${
                 isZoomed
                   ? "max-w-none max-h-none cursor-zoom-out"
-                  : "max-w-[calc(92vw)] max-h-[calc(80vh)] object-contain cursor-zoom-in"
+                  : "max-w-[calc(88vw)] max-h-[calc(68vh)] object-contain cursor-zoom-in"
               }`}
             />
           </div>
