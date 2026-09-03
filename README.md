@@ -42,25 +42,6 @@ Clipbox is a small desktop app that quietly watches your clipboard and saves eve
 
 Everything lives in a SQLite file on your machine (`clipbox.sqlite3` in your app-data folder). No accounts, no cloud, no telemetry phoning home. Your copied passwords stay your business.
 
-## Getting started
-
-Clipbox is early and currently runs from source. You'll need Rust, Node.js, and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform.
-
-```sh
-npm install
-npm run tauri dev
-```
-
-Copy something from another app and watch it appear. Full details (building an executable, finding the database, running checks) live in [`docs/BUILDING.md`](docs/BUILDING.md).
-
-## Stack
-
-Rust + SQLite (`clipbox-core`) · Tauri 2 desktop shell · React + TypeScript + Tailwind frontend. One shared core crate, so future frontends (looking at you, Linux 👀) don't reinvent storage.
-
-## Contributing
-
-Work starts with an [Issue](https://github.com/mwsk75996/clipbox/issues) — feature branch per piece of work, Pull Request into `main`, squash merge when done. Check [`AGENTS.md`](AGENTS.md) for the full workflow.
-
 ## License
 
 MIT — do whatever you want, just don't blame us when your clipboard history reveals your life choices.
