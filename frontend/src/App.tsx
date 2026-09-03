@@ -798,7 +798,9 @@ export default function App() {
                 <Button
                   variant={selectedApp !== "all" || selectedType !== "all" ? "default" : "outline"}
                   size="sm"
-                  className="gap-1.5 shrink-0 h-9"
+                  className={`gap-1.5 shrink-0 h-9 ${
+                    selectedApp !== "all" || selectedType !== "all" ? "border border-transparent" : ""
+                  }`}
                 >
                   <SlidersHorizontal className="size-4" />
                   Filters
@@ -881,7 +883,9 @@ export default function App() {
                   enterDeletedView();
                 }
               }}
-              className="gap-1.5 shrink-0 h-9"
+              // Transparent border in the active state keeps the box identical
+              // to the outlined inactive state (outline adds a 1px border).
+              className={`gap-1.5 shrink-0 h-9 ${showDeleted ? "border border-transparent" : ""}`}
               title="View recently deleted clips"
             >
               <Trash2 className="size-4" />

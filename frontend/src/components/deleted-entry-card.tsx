@@ -27,7 +27,11 @@ export function DeletedEntryCard({ entry, onRestore, onDeleteForever }: DeletedE
 
   return (
     <Card className="transition-all border shadow-sm opacity-90">
-      <CardHeader className="p-4 pb-2 flex flex-row items-center justify-between space-y-0 gap-2">
+      <CardHeader
+        className={`flex flex-row items-center justify-between space-y-0 gap-2 p-4 ${
+          snippet ? "pb-2" : ""
+        }`}
+      >
         <div className="flex items-center gap-2 flex-wrap min-w-0">
           {entry.entryType === "image" ? (
             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 select-none">
