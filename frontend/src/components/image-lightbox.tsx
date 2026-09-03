@@ -4,6 +4,7 @@
 // ----------
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 import {
   Camera,
   Image as ImageIcon,
@@ -504,15 +505,18 @@ export function ImageLightbox({
         </div>
       </div>
 
-      {/* Floating Save Confirmation Toast */}
-      {saveMessage && (
-        <div className="absolute bottom-12 left-1/2 -translate-x-1/2 z-50 pointer-events-none animate-in fade-in-0 slide-in-from-bottom-2 duration-200">
-          <div className="bg-popover/95 backdrop-blur-md text-popover-foreground border shadow-xl rounded-full px-4 py-2 flex items-center gap-2 text-xs font-medium whitespace-nowrap">
-            <Check className="size-4 text-emerald-400 shrink-0" />
-            <span>{saveMessage}</span>
-          </div>
-        </div>
-      )}
+      {/* Floating Save Confirmation Toast (portaled to body so no
+          overlay stacking context can trap it) */}
+      {saveMessage &&
+        createPortal(
+          <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-[100] pointer-events-none animate-in fade-in-0 slide-in-from-bottom-2 duration-200">
+            <div className="bg-popover/95 backdrop-blur-md text-popover-foreground border shadow-xl rounded-full px-4 py-2 flex items-center gap-2 text-xs font-medium whitespace-nowrap">
+              <Check className="size-4 text-emerald-400 shrink-0" />
+              <span>{saveMessage}</span>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
