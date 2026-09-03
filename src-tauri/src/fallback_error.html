@@ -614,7 +614,7 @@
       closeBtn.addEventListener("click", async () => {
         try {
           if (window.__TAURI_INTERNALS__) {
-            await window.__TAURI_INTERNALS__.invoke("close_window");
+            await window.__TAURI_INTERNALS__.invoke("hide_window");
           }
         } catch (e) {
           console.warn(e);

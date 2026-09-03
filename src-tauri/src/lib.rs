@@ -147,22 +147,50 @@ fn start_dragging(window: tauri::Window) -> Result<(), String> {
     window.start_dragging().map_err(|error| error.to_string())
 }
 
+// ----------
+// Window Visibility Lifecycle
+// Description: Single state-aware show/restore/focus and hide-to-tray policy
+// shared by the tray menu, tray click activation, and frontend commands.
+// ----------
+
+/// Restore a minimized window before making it visible, then focus it.
+/// Unminimize runs first so a hidden+minimized window never flashes a
+/// minimized intermediate state, then show, then focus.
+fn restore_and_focus(window: &tauri::WebviewWindow) {
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+/// Hide only when the window is already visible, focused, and not minimized.
+/// In every other state (hidden, minimized, or merely obscured) a tray
+/// activation restores and focuses instead of hiding.
+fn hides_on_tray_activation(window: &tauri::WebviewWindow) -> bool {
+    window.is_visible().unwrap_or(false)
+        && window.is_focused().unwrap_or(false)
+        && !window.is_minimized().unwrap_or(false)
+}
+
+fn toggle_window_from_tray(window: &tauri::WebviewWindow) {
+    if hides_on_tray_activation(window) {
+        let _ = window.hide();
+    } else {
+        restore_and_focus(window);
+    }
+}
+
 #[tauri::command]
-fn close_window(window: tauri::Window) -> Result<(), String> {
+fn hide_window(window: tauri::Window) -> Result<(), String> {
     // Hide to system tray instead of terminating the app
     window.hide().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn hide_window(window: tauri::Window) -> Result<(), String> {
-    window.hide().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn show_window(window: tauri::Window) -> Result<(), String> {
-    window.show().map_err(|error| error.to_string())?;
-    window.unminimize().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())
+fn show_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        restore_and_focus(&window);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -883,9 +911,7 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => {
                         if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.unminimize();
-                            let _ = window.set_focus();
+                            restore_and_focus(&window);
                         }
                     }
                     "hide" => {
@@ -917,13 +943,7 @@ pub fn run() {
                     {
                         let app = tray.app_handle();
                         if let Some(window) = app.get_webview_window("main") {
-                            if window.is_visible().unwrap_or(false) {
-                                let _ = window.hide();
-                            } else {
-                                let _ = window.show();
-                                let _ = window.unminimize();
-                                let _ = window.set_focus();
-                            }
+                            toggle_window_from_tray(&window);
                         }
                     }
                 });
@@ -975,6 +995,15 @@ pub fn run() {
 
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Hide-to-tray policy covers native close requests (Alt+F4).
+                // Explicit Quit still terminates via app.exit(), which emits
+                // no close request.
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             list_entries,
             clear_entries,
@@ -982,7 +1011,6 @@ pub fn run() {
             toggle_pinned,
             minimize_window,
             start_dragging,
-            close_window,
             hide_window,
             show_window,
             exit_app,
