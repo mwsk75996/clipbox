@@ -171,7 +171,7 @@ export default function App() {
   const [isMonitoringPaused, setIsMonitoringPaused] = React.useState<boolean>(false);
 
   const searchInputRef = React.useRef<HTMLInputElement>(null);
-  const deletedIdsRef = React.useRef<Set<number>>(new Set());
+  const inFlightDeletionsRef = React.useRef<Set<number>>(new Set());
   const lastMousePosRef = React.useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const lastKeyboardNavTimeRef = React.useRef<number>(0);
 
@@ -221,11 +221,12 @@ export default function App() {
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
         const result = await invoke<ClipboardEntry[]>("list_entries");
-        setEntries(result.filter((e) => !deletedIdsRef.current.has(e.id)));
+        setEntries(result.filter((e) => !inFlightDeletionsRef.current.has(e.id)));
       } else {
         setEntries(PREVIEW_ENTRIES);
       }
-    } catch {
+    } catch (err) {
+      console.error("Failed to fetch entries:", err);
       setEntries(PREVIEW_ENTRIES);
     }
   }, []);
@@ -248,7 +249,7 @@ export default function App() {
       try {
         if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
           unlistenNew = await listen<ClipboardEntry>("clipboard://new-entry", (event) => {
-            if (deletedIdsRef.current.has(event.payload.id)) {
+            if (inFlightDeletionsRef.current.has(event.payload.id)) {
               return;
             }
             setEntries((prev) => {
@@ -260,7 +261,7 @@ export default function App() {
           });
 
           unlistenBump = await listen<ClipboardEntry>("clipboard://entry-bumped", (event) => {
-            if (deletedIdsRef.current.has(event.payload.id)) {
+            if (inFlightDeletionsRef.current.has(event.payload.id)) {
               return;
             }
             setEntries((prev) => {
@@ -436,25 +437,20 @@ export default function App() {
     setTimeout(() => setCopiedPathId(null), 1500);
   };
 
-  // Delete single entry from history and re-sequence remaining higher IDs
+  // Delete single entry from history
   const handleDelete = async (id: number, event?: React.MouseEvent) => {
     event?.stopPropagation();
-    deletedIdsRef.current.add(id);
-    setEntries((prev) =>
-      prev
-        .filter((entry) => entry.id !== id)
-        .map((entry) =>
-          entry.id > id ? { ...entry, id: entry.id - 1 } : entry
-        )
-    );
+    inFlightDeletionsRef.current.add(id);
+    setEntries((prev) => prev.filter((entry) => entry.id !== id));
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
         await invoke("delete_entry", { id });
       }
     } catch (err) {
       console.error("Failed to delete entry", err);
-      deletedIdsRef.current.delete(id);
       fetchEntries();
+    } finally {
+      inFlightDeletionsRef.current.delete(id);
     }
   };
 
@@ -801,7 +797,10 @@ export default function App() {
 
             <ThemeToggle />
             <SettingsModal
-              onClearHistory={() => setEntries([])}
+              onClearHistory={() => {
+                inFlightDeletionsRef.current.clear();
+                setEntries([]);
+              }}
               shortcuts={shortcuts}
               onShortcutsChange={setShortcuts}
               isMonitoringPaused={isMonitoringPaused}
