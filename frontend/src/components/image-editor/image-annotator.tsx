@@ -947,310 +947,348 @@ export function ImageAnnotator({
             invoke("start_dragging").catch(console.warn);
           }
         }}
-        className="h-14 w-full bg-card border-b px-4 flex items-center justify-between gap-2 shrink-0 shadow-sm select-none"
+        className="h-14 w-full bg-card border-b px-4 flex items-center justify-between gap-3 shrink-0 shadow-sm select-none flex-nowrap"
       >
-        {/* Left: Tools & Preset Selector */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <Button
-            variant={activeTool === "pen" ? "secondary" : "ghost"}
-            size="sm"
-            onClick={() => setActiveTool("pen")}
-            className="h-8 gap-1.5 text-xs font-medium"
-            title="Pen (P)"
-          >
-            <Pen className="size-3.5 text-primary" />
-            <span>Pen</span>
-          </Button>
+        {/* Left: Contextual Tool Controls */}
+        {activeTool === "crop" ? (
+          /* Dedicated Crop Controls Bar */
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-sky-500/15 text-sky-400 border border-sky-500/30 text-xs font-semibold select-none">
+              <Crop className="size-3.5" />
+              <span>Crop</span>
+            </div>
 
-          <Button
-            variant={activeTool === "highlighter" ? "secondary" : "ghost"}
-            size="sm"
-            onClick={() => setActiveTool("highlighter")}
-            className="h-8 gap-1.5 text-xs font-medium"
-            title="Highlighter (H)"
-          >
-            <Highlighter className="size-3.5 text-amber-500" />
-            <span>Highlighter</span>
-          </Button>
-
-          <Button
-            variant={activeTool === "eraser" ? "secondary" : "ghost"}
-            size="sm"
-            onClick={() => setActiveTool("eraser")}
-            className="h-8 gap-1.5 text-xs font-medium"
-            title="Eraser (E)"
-          >
-            <Eraser className="size-3.5 text-rose-500" />
-            <span>Eraser</span>
-          </Button>
-
-          {/* Shapes Dropdown */}
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                variant={
-                  activeTool === "rectangle" ||
-                  activeTool === "circle" ||
-                  activeTool === "line" ||
-                  activeTool === "arrow"
-                    ? "secondary"
-                    : "ghost"
-                }
-                size="sm"
-                className="h-8 gap-1.5 text-xs font-medium"
-                title="Shapes"
-              >
-                {activeTool === "circle" ? (
-                  <Circle className="size-3.5" />
-                ) : activeTool === "line" ? (
-                  <Minus className="size-3.5" />
-                ) : activeTool === "arrow" ? (
-                  <MoveRight className="size-3.5" />
-                ) : (
-                  <Square className="size-3.5" />
-                )}
-                <span>Shape</span>
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="start" className="w-48 p-2 space-y-1">
-              <div className="text-[11px] font-semibold text-muted-foreground px-2 py-1 uppercase tracking-wider">
-                Select Shape
-              </div>
-              <Button
-                variant={activeTool === "rectangle" ? "secondary" : "ghost"}
-                size="sm"
-                className="w-full justify-start gap-2 h-8 text-xs"
-                onClick={() => setActiveTool("rectangle")}
-              >
-                <Square className="size-3.5" />
-                <span>Rectangle</span>
-              </Button>
-              <Button
-                variant={activeTool === "circle" ? "secondary" : "ghost"}
-                size="sm"
-                className="w-full justify-start gap-2 h-8 text-xs"
-                onClick={() => setActiveTool("circle")}
-              >
-                <Circle className="size-3.5" />
-                <span>Circle / Ellipse</span>
-              </Button>
-              <Button
-                variant={activeTool === "arrow" ? "secondary" : "ghost"}
-                size="sm"
-                className="w-full justify-start gap-2 h-8 text-xs"
-                onClick={() => setActiveTool("arrow")}
-              >
-                <MoveRight className="size-3.5" />
-                <span>Arrow</span>
-              </Button>
-              <Button
-                variant={activeTool === "line" ? "secondary" : "ghost"}
-                size="sm"
-                className="w-full justify-start gap-2 h-8 text-xs"
-                onClick={() => setActiveTool("line")}
-              >
-                <Minus className="size-3.5" />
-                <span>Line</span>
-              </Button>
-
-              <div className="border-t pt-1 mt-1">
-                <div className="text-[11px] font-semibold text-muted-foreground px-2 py-1 uppercase tracking-wider">
-                  Fill Style
-                </div>
-                <div className="grid grid-cols-3 gap-1 px-1">
-                  <Button
-                    variant={fillStyle === "none" ? "secondary" : "ghost"}
-                    size="sm"
-                    className="h-7 text-[11px]"
-                    onClick={() => setFillStyle("none")}
-                  >
-                    Outline
-                  </Button>
-                  <Button
-                    variant={fillStyle === "semi" ? "secondary" : "ghost"}
-                    size="sm"
-                    className="h-7 text-[11px]"
-                    onClick={() => setFillStyle("semi")}
-                  >
-                    Semi
-                  </Button>
-                  <Button
-                    variant={fillStyle === "solid" ? "secondary" : "ghost"}
-                    size="sm"
-                    className="h-7 text-[11px]"
-                    onClick={() => setFillStyle("solid")}
-                  >
-                    Solid
-                  </Button>
-                </div>
-              </div>
-            </PopoverContent>
-          </Popover>
-
-          {/* Crop Tool Button */}
-          <Button
-            variant={activeTool === "crop" ? "secondary" : "ghost"}
-            size="sm"
-            onClick={handleSelectCropTool}
-            className="h-8 gap-1.5 text-xs font-medium"
-            title="Crop Image (C)"
-          >
-            <Crop className="size-3.5 text-sky-400" />
-            <span>Crop</span>
-          </Button>
-
-          {/* Color & Width Popover */}
-          {activeTool !== "crop" && activeTool !== "eraser" && (
-            <Popover>
-              <PopoverTrigger asChild>
+            <div className="flex items-center gap-0.5 bg-muted/60 p-0.5 rounded-lg border">
+              {(["free", "1:1", "16:9", "4:3"] as CropAspectRatio[]).map((ratio) => (
                 <Button
-                  variant="outline"
+                  key={ratio}
+                  variant={cropRatio === ratio ? "secondary" : "ghost"}
                   size="sm"
-                  className="h-8 gap-1.5 text-xs font-medium border"
-                  title="Color & Thickness"
+                  className="h-7 px-2.5 text-xs font-medium"
+                  onClick={() => {
+                    setCropRatio(ratio);
+                    if (cropBox && ratio !== "free") {
+                      let r = 1;
+                      if (ratio === "16:9") r = 16 / 9;
+                      else if (ratio === "4:3") r = 4 / 3;
+                      const newH = Math.min(dimensions.height, cropBox.width / r);
+                      const newW = newH * r;
+                      setCropBox({
+                        x: Math.max(0, Math.min(dimensions.width - newW, cropBox.x)),
+                        y: Math.max(0, Math.min(dimensions.height - newH, cropBox.y)),
+                        width: newW,
+                        height: newH,
+                      });
+                    }
+                  }}
                 >
-                  <div
-                    className="size-3.5 rounded-full border border-black/20"
-                    style={{
-                      backgroundColor:
-                        activeTool === "highlighter" ? highlighterColor : penColor,
-                    }}
-                  />
-                  <Palette className="size-3 text-muted-foreground" />
+                  {ratio === "free" ? "Free" : ratio}
                 </Button>
-              </PopoverTrigger>
-              <PopoverContent align="start" className="w-56 p-3 space-y-3">
-                <div>
-                  <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
-                    Colors
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {(activeTool === "highlighter" ? HIGHLIGHTER_COLORS : PEN_COLORS).map(
-                      (c) => (
-                        <button
-                          key={c.value}
-                          type="button"
-                          onClick={() => {
-                            if (activeTool === "highlighter") {
-                              setHighlighterColor(c.value);
-                            } else {
-                              setPenColor(c.value);
-                            }
-                          }}
-                          className={`size-6 rounded-full border transition-transform flex items-center justify-center ${
-                            (activeTool === "highlighter" ? highlighterColor : penColor) ===
-                            c.value
-                              ? "scale-110 ring-2 ring-primary"
-                              : "hover:scale-105"
-                          }`}
-                          style={{ backgroundColor: c.value }}
-                          title={c.name}
-                        >
-                          {(activeTool === "highlighter" ? highlighterColor : penColor) ===
-                            c.value && (
-                            <Check
-                              className={`size-3 ${
-                                c.value === "#ffffff" || c.value === "#facc15"
-                                  ? "text-black"
-                                  : "text-white"
-                              }`}
-                            />
-                          )}
-                        </button>
-                      )
-                    )}
-                  </div>
-                </div>
+              ))}
+            </div>
 
-                <div className="border-t pt-2">
-                  <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
-                    Thickness
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {activeTool === "highlighter"
-                      ? HIGHLIGHTER_WIDTHS.map((w) => (
-                          <Button
-                            key={w.value}
-                            variant={highlighterWidth === w.value ? "secondary" : "ghost"}
-                            size="sm"
-                            className="flex-1 h-7 text-xs"
-                            onClick={() => setHighlighterWidth(w.value)}
-                          >
-                            {w.label}
-                          </Button>
-                        ))
-                      : STROKE_WIDTHS.map((w) => (
-                          <Button
-                            key={w.value}
-                            variant={strokeWidth === w.value ? "secondary" : "ghost"}
-                            size="sm"
-                            className="flex-1 h-7 text-xs"
-                            onClick={() => setStrokeWidth(w.value)}
-                          >
-                            {w.label}
-                          </Button>
-                        ))}
-                  </div>
-                </div>
-              </PopoverContent>
-            </Popover>
-          )}
+            <Button
+              variant="default"
+              size="sm"
+              onClick={handleApplyCrop}
+              className="h-8 gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-medium shadow-sm"
+              title="Apply crop"
+            >
+              <Check className="size-3.5" />
+              <span>Apply</span>
+            </Button>
 
-          {/* Crop Action Controls when Crop is active */}
-          {activeTool === "crop" && (
-            <div className="flex items-center gap-1.5 pl-2 border-l">
-              <div className="flex items-center gap-0.5 bg-muted/50 p-0.5 rounded-md">
-                {(["free", "1:1", "16:9", "4:3"] as CropAspectRatio[]).map((ratio) => (
-                  <Button
-                    key={ratio}
-                    variant={cropRatio === ratio ? "secondary" : "ghost"}
-                    size="sm"
-                    className="h-6 px-1.5 text-[11px] font-medium"
-                    onClick={() => {
-                      setCropRatio(ratio);
-                      if (cropBox && ratio !== "free") {
-                        let r = 1;
-                        if (ratio === "16:9") r = 16 / 9;
-                        else if (ratio === "4:3") r = 4 / 3;
-                        const newH = Math.min(dimensions.height, cropBox.width / r);
-                        const newW = newH * r;
-                        setCropBox({
-                          x: Math.max(0, Math.min(dimensions.width - newW, cropBox.x)),
-                          y: Math.max(0, Math.min(dimensions.height - newH, cropBox.y)),
-                          width: newW,
-                          height: newH,
-                        });
-                      }
-                    }}
-                  >
-                    {ratio === "free" ? "Free" : ratio}
-                  </Button>
-                ))}
-              </div>
-              <div className="h-4 w-px bg-border mx-0.5" />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCancelCrop}
+              className="h-8 gap-1.5 text-xs font-medium"
+              title="Cancel crop"
+            >
+              <X className="size-3.5" />
+              <span>Cancel</span>
+            </Button>
+          </div>
+        ) : (
+          /* Segmented Drawing Tools & Color Palette */
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center bg-muted/50 p-0.5 rounded-lg border gap-0.5">
               <Button
-                variant="default"
+                variant={activeTool === "pen" ? "secondary" : "ghost"}
                 size="sm"
-                onClick={handleApplyCrop}
-                className="h-8 gap-1 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
-                title="Apply crop"
+                onClick={() => setActiveTool("pen")}
+                className="h-7 px-2.5 gap-1.5 text-xs font-medium"
+                title="Ballpoint Pen (P)"
               >
-                <Check className="size-3.5" />
-                <span>Apply</span>
+                <Pen className="size-3.5 text-primary" />
+                <span>Pen</span>
               </Button>
+
               <Button
-                variant="outline"
+                variant={activeTool === "highlighter" ? "secondary" : "ghost"}
                 size="sm"
-                onClick={handleCancelCrop}
-                className="h-8 gap-1 text-xs font-medium"
-                title="Cancel crop"
+                onClick={() => setActiveTool("highlighter")}
+                className="h-7 px-2.5 gap-1.5 text-xs font-medium"
+                title="Highlighter (H)"
               >
-                <X className="size-3.5" />
-                <span>Cancel</span>
+                <Highlighter className="size-3.5 text-amber-500" />
+                <span>Highlighter</span>
+              </Button>
+
+              <Button
+                variant={activeTool === "eraser" ? "secondary" : "ghost"}
+                size="sm"
+                onClick={() => setActiveTool("eraser")}
+                className="h-7 px-2.5 gap-1.5 text-xs font-medium"
+                title="Eraser (E)"
+              >
+                <Eraser className="size-3.5 text-rose-500" />
+                <span>Eraser</span>
+              </Button>
+
+              {/* Shapes Popover */}
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant={
+                      activeTool === "rectangle" ||
+                      activeTool === "circle" ||
+                      activeTool === "line" ||
+                      activeTool === "arrow"
+                        ? "secondary"
+                        : "ghost"
+                    }
+                    size="sm"
+                    className="h-7 px-2.5 gap-1.5 text-xs font-medium"
+                    title="Shapes"
+                  >
+                    {activeTool === "circle" ? (
+                      <Circle className="size-3.5" />
+                    ) : activeTool === "line" ? (
+                      <Minus className="size-3.5" />
+                    ) : activeTool === "arrow" ? (
+                      <MoveRight className="size-3.5" />
+                    ) : (
+                      <Square className="size-3.5" />
+                    )}
+                    <span>Shapes</span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-48 p-2 space-y-1">
+                  <div className="text-[11px] font-semibold text-muted-foreground px-2 py-1 uppercase tracking-wider">
+                    Select Shape
+                  </div>
+                  <Button
+                    variant={activeTool === "rectangle" ? "secondary" : "ghost"}
+                    size="sm"
+                    className="w-full justify-start gap-2 h-8 text-xs"
+                    onClick={() => setActiveTool("rectangle")}
+                  >
+                    <Square className="size-3.5" />
+                    <span>Rectangle</span>
+                  </Button>
+                  <Button
+                    variant={activeTool === "circle" ? "secondary" : "ghost"}
+                    size="sm"
+                    className="w-full justify-start gap-2 h-8 text-xs"
+                    onClick={() => setActiveTool("circle")}
+                  >
+                    <Circle className="size-3.5" />
+                    <span>Circle / Ellipse</span>
+                  </Button>
+                  <Button
+                    variant={activeTool === "arrow" ? "secondary" : "ghost"}
+                    size="sm"
+                    className="w-full justify-start gap-2 h-8 text-xs"
+                    onClick={() => setActiveTool("arrow")}
+                  >
+                    <MoveRight className="size-3.5" />
+                    <span>Arrow</span>
+                  </Button>
+                  <Button
+                    variant={activeTool === "line" ? "secondary" : "ghost"}
+                    size="sm"
+                    className="w-full justify-start gap-2 h-8 text-xs"
+                    onClick={() => setActiveTool("line")}
+                  >
+                    <Minus className="size-3.5" />
+                    <span>Line</span>
+                  </Button>
+
+                  <div className="border-t pt-1 mt-1">
+                    <div className="text-[11px] font-semibold text-muted-foreground px-2 py-1 uppercase tracking-wider">
+                      Fill Style
+                    </div>
+                    <div className="grid grid-cols-3 gap-1 px-1">
+                      <Button
+                        variant={fillStyle === "none" ? "secondary" : "ghost"}
+                        size="sm"
+                        className="h-7 text-[11px]"
+                        onClick={() => setFillStyle("none")}
+                      >
+                        Outline
+                      </Button>
+                      <Button
+                        variant={fillStyle === "semi" ? "secondary" : "ghost"}
+                        size="sm"
+                        className="h-7 text-[11px]"
+                        onClick={() => setFillStyle("semi")}
+                      >
+                        Semi
+                      </Button>
+                      <Button
+                        variant={fillStyle === "solid" ? "secondary" : "ghost"}
+                        size="sm"
+                        className="h-7 text-[11px]"
+                        onClick={() => setFillStyle("solid")}
+                      >
+                        Solid
+                      </Button>
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
+
+              {/* Crop Tool Toggle */}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleSelectCropTool}
+                className="h-7 px-2.5 gap-1.5 text-xs font-medium text-sky-400 hover:text-sky-300"
+                title="Crop Image (C)"
+              >
+                <Crop className="size-3.5" />
+                <span>Crop</span>
               </Button>
             </div>
-          )}
-        </div>
+
+            {/* Color & Width Popover */}
+            {activeTool !== "eraser" && (
+              <div className="flex items-center gap-1.5">
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 px-2 gap-1.5 text-xs font-medium border"
+                      title="Color & Thickness"
+                    >
+                      <div
+                        className="size-4 rounded-full border border-black/20 shadow-sm"
+                        style={{
+                          backgroundColor:
+                            activeTool === "highlighter" ? highlighterColor : penColor,
+                        }}
+                      />
+                      <Palette className="size-3 text-muted-foreground" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-56 p-3 space-y-3">
+                    <div>
+                      <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+                        Colors
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(activeTool === "highlighter" ? HIGHLIGHTER_COLORS : PEN_COLORS).map(
+                          (c) => (
+                            <button
+                              key={c.value}
+                              type="button"
+                              onClick={() => {
+                                if (activeTool === "highlighter") {
+                                  setHighlighterColor(c.value);
+                                } else {
+                                  setPenColor(c.value);
+                                }
+                              }}
+                              className={`size-6 rounded-full border transition-transform flex items-center justify-center ${
+                                (activeTool === "highlighter" ? highlighterColor : penColor) ===
+                                c.value
+                                  ? "scale-110 ring-2 ring-primary"
+                                  : "hover:scale-105"
+                              }`}
+                              style={{ backgroundColor: c.value }}
+                              title={c.name}
+                            >
+                              {(activeTool === "highlighter" ? highlighterColor : penColor) ===
+                                c.value && (
+                                <Check
+                                  className={`size-3 ${
+                                    c.value === "#ffffff" || c.value === "#facc15"
+                                      ? "text-black"
+                                      : "text-white"
+                                  }`}
+                                />
+                              )}
+                            </button>
+                          )
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="border-t pt-2">
+                      <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+                        Thickness
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        {activeTool === "highlighter"
+                          ? HIGHLIGHTER_WIDTHS.map((w) => (
+                              <Button
+                                key={w.value}
+                                variant={highlighterWidth === w.value ? "secondary" : "ghost"}
+                                size="sm"
+                                className="flex-1 h-7 text-xs"
+                                onClick={() => setHighlighterWidth(w.value)}
+                              >
+                                {w.label}
+                              </Button>
+                            ))
+                          : STROKE_WIDTHS.map((w) => (
+                              <Button
+                                key={w.value}
+                                variant={strokeWidth === w.value ? "secondary" : "ghost"}
+                                size="sm"
+                                className="flex-1 h-7 text-xs"
+                                onClick={() => setStrokeWidth(w.value)}
+                              >
+                                {w.label}
+                              </Button>
+                            ))}
+                      </div>
+                    </div>
+                  </PopoverContent>
+                </Popover>
+
+                {/* Quick Color Dots for fast switching without opening popover */}
+                <div className="hidden sm:flex items-center gap-1 pl-1">
+                  {(activeTool === "highlighter"
+                    ? HIGHLIGHTER_COLORS.slice(0, 4)
+                    : PEN_COLORS.slice(0, 5)
+                  ).map((c) => (
+                    <button
+                      key={c.value}
+                      type="button"
+                      onClick={() => {
+                        if (activeTool === "highlighter") {
+                          setHighlighterColor(c.value);
+                        } else {
+                          setPenColor(c.value);
+                        }
+                      }}
+                      className={`size-4 rounded-full border border-black/20 transition-transform ${
+                        (activeTool === "highlighter" ? highlighterColor : penColor) === c.value
+                          ? "scale-125 ring-1.5 ring-primary"
+                          : "hover:scale-110 opacity-80 hover:opacity-100"
+                      }`}
+                      style={{ backgroundColor: c.value }}
+                      title={c.name}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Right: History & Export Actions */}
         <div className="flex items-center gap-1.5 shrink-0">
