@@ -436,6 +436,7 @@ fn check_clipboard(
                                 image_data: None,
                                 image_dimensions: None,
                                 files_data: Some(files.files_json),
+                                source_url: None,
                             };
                             let _ = app.emit("clipboard://new-entry", entry);
                         }
@@ -481,6 +482,7 @@ fn check_clipboard(
                         metadata.app_icon = None;
                     } else {
                         metadata.window_title = Some("Copied Image".into());
+                        metadata.source_url = crate::browser_url::read_clipboard_source_url();
                     }
 
                     if duplicate_mode == "bump" {
@@ -522,6 +524,7 @@ fn check_clipboard(
                                 image_data: Some(img.data_url),
                                 image_dimensions: Some(img.dimensions),
                                 files_data: None,
+                                source_url: metadata.source_url,
                             };
                             let _ = app.emit("clipboard://new-entry", entry);
                         }
@@ -555,7 +558,8 @@ fn check_clipboard(
             };
 
             if !is_internal_copy && !cleaned.is_empty() {
-                let metadata = source::current();
+                let mut metadata = source::current();
+                metadata.source_url = crate::browser_url::read_clipboard_source_url();
                 if !is_excluded_process(metadata.source_process.as_deref()) {
                     if duplicate_mode == "bump" {
                         if let Ok(Some(existing_id)) = store.find_existing_text(cleaned) {
@@ -596,6 +600,7 @@ fn check_clipboard(
                                 image_data: None,
                                 image_dimensions: None,
                                 files_data: None,
+                                source_url: metadata.source_url,
                             };
                             let _ = app.emit("clipboard://new-entry", entry);
                         }

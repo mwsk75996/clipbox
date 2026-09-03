@@ -21,6 +21,7 @@ import {
   ZoomIn,
   Files,
   PauseCircle,
+  ExternalLink,
 } from "lucide-react";
 import { startOfDay, endOfDay } from "date-fns";
 import type { DateRange } from "react-day-picker";
@@ -72,6 +73,7 @@ export interface ClipboardEntry {
   imageData?: string | null;
   imageDimensions?: string | null;
   filesData?: string | null;
+  sourceUrl?: string | null;
 }
 
 const PREVIEW_ENTRIES: ClipboardEntry[] = [
@@ -83,6 +85,7 @@ const PREVIEW_ENTRIES: ClipboardEntry[] = [
     sourceApp: "Brave",
     sourceProcess: "brave.exe",
     windowTitle: "Clipbox · GitHub",
+    sourceUrl: "https://github.com/mwsk75996/clipbox",
   },
   {
     id: 2,
@@ -107,6 +110,15 @@ function formatTimestamp(timestamp: number): string {
     dateStyle: "medium",
     timeStyle: "short",
   });
+}
+
+function formatSourceUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
 }
 
 function sourceLabel(entry: ClipboardEntry): string {
@@ -178,6 +190,18 @@ export default function App() {
       }
     } catch (err) {
       console.error("Failed to resume monitoring", err);
+    }
+  };
+
+  const handleOpenUrl = async (url: string) => {
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("open_url", { url });
+      } else {
+        window.open(url, "_blank");
+      }
+    } catch (err) {
+      console.error("Failed to open source URL:", err);
     }
   };
 
@@ -277,6 +301,7 @@ export default function App() {
           entry.sourceApp,
           entry.sourceProcess,
           entry.windowTitle,
+          entry.sourceUrl,
         ].some((val) => val?.toLowerCase().includes(query));
 
       const matchesApp =
@@ -940,6 +965,23 @@ export default function App() {
                               <CardDescription className="text-xs">
                                 {formatTimestamp(entry.copiedAt)}
                               </CardDescription>
+                            </>
+                          )}
+                          {entry.sourceUrl && (
+                            <>
+                              <span className="text-xs text-muted-foreground">·</span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenUrl(entry.sourceUrl!);
+                                }}
+                                title={`Open original URL: ${entry.sourceUrl}`}
+                                className="inline-flex items-center gap-1 text-xs text-primary/80 hover:text-primary hover:underline max-w-[200px] truncate transition-colors cursor-pointer group"
+                              >
+                                <ExternalLink className="size-3 shrink-0 opacity-70 group-hover:opacity-100" />
+                                <span className="truncate">{formatSourceUrl(entry.sourceUrl)}</span>
+                              </button>
                             </>
                           )}
                         </div>

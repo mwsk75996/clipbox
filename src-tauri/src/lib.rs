@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
 mod autostart;
+mod browser_url;
 mod clipboard;
 mod file_clipboard;
 mod image_clipboard;
@@ -31,6 +32,7 @@ pub struct ClipboardEntry {
     pub image_data: Option<String>,
     pub image_dimensions: Option<String>,
     pub files_data: Option<String>,
+    pub source_url: Option<String>,
 }
 
 impl From<CoreClipboardEntry> for ClipboardEntry {
@@ -48,6 +50,7 @@ impl From<CoreClipboardEntry> for ClipboardEntry {
             image_data: entry.image_data,
             image_dimensions: entry.image_dimensions,
             files_data: entry.files_data,
+            source_url: entry.source_url,
         }
     }
 }
@@ -321,6 +324,37 @@ fn open_in_explorer(path: String) -> Result<(), String> {
         };
         let _ = std::process::Command::new("xdg-open").arg(target).spawn();
         Ok(())
+    }
+}
+
+// ----------
+// Open URL in Default Browser
+// Description: Opens a validated HTTP/HTTPS web address in the user's default browser.
+// ----------
+
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            std::process::Command::new("rundll32")
+                .raw_arg(format!("url.dll,FileProtocolHandler \"{trimmed}\""))
+                .spawn()
+                .map_err(|e| format!("could not open url: {e}"))?;
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            std::process::Command::new("xdg-open")
+                .arg(trimmed)
+                .spawn()
+                .map_err(|e| format!("could not open url: {e}"))?;
+            Ok(())
+        }
+    } else {
+        Err("Invalid or unsupported URL protocol".into())
     }
 }
 
@@ -928,6 +962,7 @@ pub fn run() {
             save_image_to_file,
             copy_files_to_clipboard,
             open_in_explorer,
+            open_url,
             is_monitoring_paused,
             set_monitoring_paused,
             get_privacy_settings,

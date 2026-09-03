@@ -15,6 +15,7 @@ pub struct ClipboardMetadata {
     pub source_process: Option<String>,
     pub window_title: Option<String>,
     pub app_icon: Option<String>,
+    pub source_url: Option<String>,
 }
 
 /// A stored clipboard item returned to application frontends.
@@ -32,6 +33,7 @@ pub struct ClipboardEntry {
     pub image_data: Option<String>,
     pub image_dimensions: Option<String>,
     pub files_data: Option<String>,
+    pub source_url: Option<String>,
 }
 
 /// SQLite-backed storage shared by Clipbox frontends.
@@ -59,7 +61,8 @@ impl ClipboardStore {
                 entry_type TEXT NOT NULL DEFAULT 'text',
                 image_data TEXT,
                 image_dimensions TEXT,
-                files_data TEXT
+                files_data TEXT,
+                source_url TEXT
             );
             CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
@@ -78,6 +81,7 @@ impl ClipboardStore {
             ("image_data", "image_data TEXT"),
             ("image_dimensions", "image_dimensions TEXT"),
             ("files_data", "files_data TEXT"),
+            ("source_url", "source_url TEXT"),
         ] {
             if !Self::has_column(&connection, column)? {
                 connection.execute(
@@ -129,8 +133,8 @@ impl ClipboardStore {
 
         self.connection.execute(
             "INSERT INTO clipboard_entries
-                (content, copied_at, source_app, source_process, window_title, app_icon)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (content, copied_at, source_app, source_process, window_title, app_icon, source_url)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 content_to_store,
                 copied_at,
@@ -138,6 +142,7 @@ impl ClipboardStore {
                 metadata.source_process.as_deref(),
                 metadata.window_title.as_deref(),
                 metadata.app_icon.as_deref(),
+                metadata.source_url.as_deref(),
             ],
         )?;
 
@@ -174,8 +179,8 @@ impl ClipboardStore {
 
         self.connection.execute(
             "INSERT INTO clipboard_entries (
-                content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 'image', ?7, ?8)",
+                content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, source_url
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 'image', ?7, ?8, ?9)",
             params![
                 content_label,
                 now,
@@ -185,6 +190,7 @@ impl ClipboardStore {
                 metadata.app_icon.as_deref(),
                 image_data,
                 dimensions,
+                metadata.source_url.as_deref(),
             ],
         )?;
 
@@ -219,8 +225,8 @@ impl ClipboardStore {
 
         self.connection.execute(
             "INSERT INTO clipboard_entries (
-                content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, files_data
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 'file', ?7)",
+                content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, files_data, source_url
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 'file', ?7, ?8)",
             params![
                 display_summary,
                 now,
@@ -229,6 +235,7 @@ impl ClipboardStore {
                 metadata.window_title.as_deref(),
                 metadata.app_icon.as_deref(),
                 files_json,
+                metadata.source_url.as_deref(),
             ],
         )?;
 
@@ -272,7 +279,7 @@ impl ClipboardStore {
     /// Return the newest stored entries first, prioritizing pinned entries.
     pub fn recent_entries(&self, limit: u32) -> Result<Vec<ClipboardEntry>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data
+            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url
              FROM clipboard_entries
              ORDER BY is_pinned DESC, copied_at DESC, id DESC
              LIMIT ?1",
@@ -292,6 +299,7 @@ impl ClipboardStore {
                 image_data: row.get(9)?,
                 image_dimensions: row.get(10)?,
                 files_data: row.get(11)?,
+                source_url: row.get(12)?,
             })
         })?;
 
@@ -301,7 +309,7 @@ impl ClipboardStore {
     /// Return a single stored entry by its ID.
     pub fn get_entry(&self, id: i64) -> Result<Option<ClipboardEntry>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data
+            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url
              FROM clipboard_entries
              WHERE id = ?1",
         )?;
@@ -320,6 +328,7 @@ impl ClipboardStore {
                 image_data: row.get(9)?,
                 image_dimensions: row.get(10)?,
                 files_data: row.get(11)?,
+                source_url: row.get(12)?,
             })
         })?;
 
@@ -384,14 +393,16 @@ impl ClipboardStore {
                  source_app = COALESCE(?2, source_app),
                  source_process = COALESCE(?3, source_process),
                  window_title = COALESCE(?4, window_title),
-                 app_icon = COALESCE(?5, app_icon)
-             WHERE id = ?6",
+                 app_icon = COALESCE(?5, app_icon),
+                 source_url = COALESCE(?6, source_url)
+             WHERE id = ?7",
             params![
                 now,
                 metadata.source_app.as_deref(),
                 metadata.source_process.as_deref(),
                 metadata.window_title.as_deref(),
                 metadata.app_icon.as_deref(),
+                metadata.source_url.as_deref(),
                 id,
             ],
         )?;
@@ -527,6 +538,7 @@ mod tests {
             source_process: Some("notepad.exe".into()),
             window_title: Some("Notes".into()),
             app_icon: Some("data:image/bmp;base64,abc".into()),
+            source_url: None,
         };
         let id = store
             .add_entry("hello from Clipbox", &metadata)
@@ -572,6 +584,7 @@ mod tests {
             source_process: Some("browser.exe".into()),
             window_title: Some("A page".into()),
             app_icon: Some("data:image/bmp;base64,xyz".into()),
+            source_url: None,
         };
 
         let id = store
@@ -782,6 +795,7 @@ mod tests {
             source_process: Some("SnippingTool.exe".into()),
             window_title: Some("Snipping Tool".into()),
             app_icon: None,
+            source_url: None,
         };
 
         let fake_data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
@@ -804,6 +818,7 @@ mod tests {
             source_process: Some("explorer.exe".into()),
             window_title: Some("Documents".into()),
             app_icon: None,
+            source_url: None,
         };
 
         let fake_json = r#"[{"name":"test.txt","path":"C:\\test.txt","extension":"txt","size":128,"is_directory":false}]"#;
@@ -845,5 +860,38 @@ mod tests {
         let entries = store.recent_entries(10).unwrap();
         assert_eq!(entries[0].id, id1);
         assert_eq!(entries[0].content, "First item");
+    }
+
+    #[test]
+    fn stores_and_retrieves_browser_source_url() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        let metadata = ClipboardMetadata {
+            source_app: Some("Brave Browser".into()),
+            source_process: Some("brave.exe".into()),
+            window_title: Some("GitHub Issue #3".into()),
+            app_icon: None,
+            source_url: Some("https://github.com/mwsk75996/clipbox/issues/3".into()),
+        };
+
+        let id = store.add_entry("Copied web text", &metadata).unwrap();
+        let entry = store.get_entry(id).unwrap().unwrap();
+
+        assert_eq!(
+            entry.source_url.as_deref(),
+            Some("https://github.com/mwsk75996/clipbox/issues/3")
+        );
+        assert_eq!(entry.source_app.as_deref(), Some("Brave Browser"));
+
+        // Plain text copy without URL
+        let plain_meta = ClipboardMetadata {
+            source_app: Some("Notepad".into()),
+            source_process: Some("notepad.exe".into()),
+            window_title: Some("Untitled".into()),
+            app_icon: None,
+            source_url: None,
+        };
+        let id2 = store.add_entry("Plain text", &plain_meta).unwrap();
+        let entry2 = store.get_entry(id2).unwrap().unwrap();
+        assert_eq!(entry2.source_url, None);
     }
 }

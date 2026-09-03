@@ -83,6 +83,7 @@ mod windows_source {
             source_process,
             window_title: window_title(window),
             app_icon,
+            source_url: None,
         }
     }
 
