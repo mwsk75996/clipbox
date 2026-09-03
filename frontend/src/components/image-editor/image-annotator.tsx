@@ -88,6 +88,7 @@ export function ImageAnnotator({
   const [highlighterWidth, setHighlighterWidth] = React.useState<number>(24);
   const [fillStyle, setFillStyle] = React.useState<FillStyle>("none");
   const [cropRatio, setCropRatio] = React.useState<CropAspectRatio>("free");
+  const [isShapeMenuOpen, setIsShapeMenuOpen] = React.useState<boolean>(false);
 
   // Annotations & History
   const [annotations, setAnnotations] = React.useState<Annotation[]>([]);
@@ -1044,7 +1045,7 @@ export function ImageAnnotator({
               </Button>
 
               {/* Shapes Popover */}
-              <Popover>
+              <Popover open={isShapeMenuOpen} onOpenChange={setIsShapeMenuOpen}>
                 <PopoverTrigger asChild>
                   <Button
                     variant={
@@ -1078,7 +1079,10 @@ export function ImageAnnotator({
                     variant={activeTool === "rectangle" ? "secondary" : "ghost"}
                     size="sm"
                     className="w-full justify-start gap-2 h-8 text-xs"
-                    onClick={() => setActiveTool("rectangle")}
+                    onClick={() => {
+                      setActiveTool("rectangle");
+                      setIsShapeMenuOpen(false);
+                    }}
                   >
                     <Square className="size-3.5" />
                     <span>Rectangle</span>
@@ -1087,7 +1091,10 @@ export function ImageAnnotator({
                     variant={activeTool === "circle" ? "secondary" : "ghost"}
                     size="sm"
                     className="w-full justify-start gap-2 h-8 text-xs"
-                    onClick={() => setActiveTool("circle")}
+                    onClick={() => {
+                      setActiveTool("circle");
+                      setIsShapeMenuOpen(false);
+                    }}
                   >
                     <Circle className="size-3.5" />
                     <span>Circle / Ellipse</span>
@@ -1096,7 +1103,10 @@ export function ImageAnnotator({
                     variant={activeTool === "arrow" ? "secondary" : "ghost"}
                     size="sm"
                     className="w-full justify-start gap-2 h-8 text-xs"
-                    onClick={() => setActiveTool("arrow")}
+                    onClick={() => {
+                      setActiveTool("arrow");
+                      setIsShapeMenuOpen(false);
+                    }}
                   >
                     <MoveRight className="size-3.5" />
                     <span>Arrow</span>
@@ -1105,7 +1115,10 @@ export function ImageAnnotator({
                     variant={activeTool === "line" ? "secondary" : "ghost"}
                     size="sm"
                     className="w-full justify-start gap-2 h-8 text-xs"
-                    onClick={() => setActiveTool("line")}
+                    onClick={() => {
+                      setActiveTool("line");
+                      setIsShapeMenuOpen(false);
+                    }}
                   >
                     <Minus className="size-3.5" />
                     <span>Line</span>
