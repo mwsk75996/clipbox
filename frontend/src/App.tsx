@@ -111,6 +111,19 @@ const TRASH_RETENTION_LABELS: Record<string, string> = {
   "30days": "30 days",
 };
 
+// Minimum time the per-card "Restoring..." indication stays visible, so fast
+// restores don't flash and slow ones feel deliberate instead of glitchy.
+const RESTORE_MIN_INDICATION_MS = 900;
+
+// Maximum stacked global toasts; oldest dismisses first beyond this.
+const MAX_STACKED_TOASTS = 3;
+
+interface AppToast {
+  id: number;
+  message: string;
+  kind: "success" | "error";
+}
+
 const PREVIEW_ENTRIES: ClipboardEntry[] = [
   {
     id: 3,
@@ -203,7 +216,7 @@ export default function App() {
   const [showDeleted, setShowDeleted] = React.useState(false);
   const [deletedEntries, setDeletedEntries] = React.useState<DeletedClipboardEntry[]>([]);
   const [trashRetention, setTrashRetention] = React.useState<string | null>(null);
-  const [appToast, setAppToast] = React.useState<{ message: string; kind: "success" | "error" } | null>(null);
+  const [toasts, setToasts] = React.useState<AppToast[]>([]);
 
   // Keyboard shortcuts and privacy monitoring state
   const [shortcuts, setShortcuts] = React.useState<ShortcutSettings>(DEFAULT_SHORTCUTS);
@@ -212,16 +225,17 @@ export default function App() {
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const inFlightDeletionsRef = React.useRef<Set<number>>(new Set());
   const lastFetchTimeRef = React.useRef<number>(0);
-  const toastTimerRef = React.useRef<number | undefined>(undefined);
+  const toastIdRef = React.useRef<number>(0);
 
-  // Transient bottom-centered confirmation pill (auto-dismissed).
+  // Stacked transient confirmation pills (each auto-dismisses independently).
   const showToast = React.useCallback((message: string, kind: "success" | "error" = "success") => {
-    setAppToast({ message, kind });
-    window.clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => setAppToast(null), 3000);
+    toastIdRef.current += 1;
+    const id = toastIdRef.current;
+    setToasts((prev) => [...prev.slice(-(MAX_STACKED_TOASTS - 1)), { id, message, kind }]);
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((toast) => toast.id !== id));
+    }, 3000);
   }, []);
-
-  React.useEffect(() => () => window.clearTimeout(toastTimerRef.current), []);
   const lastMousePosRef = React.useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const lastKeyboardNavTimeRef = React.useRef<number>(0);
 
@@ -553,7 +567,14 @@ export default function App() {
   const handleRestoreDeleted = async (id: number) => {
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-        const restoredId = await invoke<number | null>("restore_deleted_entry", { id });
+        // Race the restore against a minimum indication window so the
+        // per-card "Restoring..." state always reads as deliberate.
+        const [restoredId] = await Promise.all([
+          invoke<number | null>("restore_deleted_entry", { id }),
+          new Promise<void>((resolve) => {
+            window.setTimeout(resolve, RESTORE_MIN_INDICATION_MS);
+          }),
+        ]);
         if (restoredId !== null) {
           showToast("Restored to history");
         }
@@ -1397,17 +1418,24 @@ export default function App() {
         </main>
       </div>
 
-      {appToast &&
+      {toasts.length > 0 &&
         createPortal(
-          <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-[100] pointer-events-none animate-in fade-in-0 slide-in-from-bottom-2 duration-200">
-            <div className="bg-popover/95 backdrop-blur-md text-popover-foreground border shadow-xl rounded-full px-4 py-2 flex items-center gap-2 text-xs font-medium whitespace-nowrap">
-              {appToast.kind === "success" ? (
-                <Check className="size-4 text-emerald-400 shrink-0" />
-              ) : (
-                <X className="size-4 text-red-400 shrink-0" />
-              )}
-              <span>{appToast.message}</span>
-            </div>
+          <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-[100] pointer-events-none flex flex-col items-center gap-2">
+            {toasts.map((toast) => (
+              <div
+                key={toast.id}
+                className="animate-in fade-in-0 slide-in-from-bottom-2 duration-200"
+              >
+                <div className="bg-popover/95 backdrop-blur-md text-popover-foreground border shadow-xl rounded-full px-4 py-2 flex items-center gap-2 text-xs font-medium whitespace-nowrap">
+                  {toast.kind === "success" ? (
+                    <Check className="size-4 text-emerald-400 shrink-0" />
+                  ) : (
+                    <X className="size-4 text-red-400 shrink-0" />
+                  )}
+                  <span>{toast.message}</span>
+                </div>
+              </div>
+            ))}
           </div>,
           document.body
         )}
