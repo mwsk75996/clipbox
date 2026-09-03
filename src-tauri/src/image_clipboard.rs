@@ -238,3 +238,139 @@ pub fn compute_bytes_hash(bytes: &[u8]) -> u64 {
     }
     hasher.finish()
 }
+
+// ----------
+// Native Multi-Format Image Clipboard Writer
+// Description: Writes PNG bytes to the Windows clipboard in both standard CF_DIB (Format 8) for legacy applications (Paint, Office, Photoshop) and registered "PNG" format for modern applications (Discord, web browsers, Slack).
+// ----------
+
+#[cfg(windows)]
+pub fn write_clipboard_image(png_bytes: &[u8]) -> Result<(), String> {
+    use windows::core::w;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+
+    // Decode PNG to get dimensions and RGBA pixels for CF_DIB
+    let img = image::load_from_memory(png_bytes)
+        .map_err(|e| format!("failed to decode PNG bytes: {e}"))?
+        .to_rgba8();
+
+    let width = img.width() as usize;
+    let height = img.height() as usize;
+    let raw_rgba = img.into_raw();
+
+    // Standard Windows CF_DIB format:
+    // BITMAPINFOHEADER (40 bytes) + bottom-up BGR / BGRA pixel array
+    // Each row must be aligned to a 4-byte boundary.
+    let row_stride = ((width * 32 + 31) / 32) * 4;
+    let image_size = row_stride * height;
+    let total_dib_size = 40 + image_size;
+
+    let mut dib_bytes = vec![0u8; total_dib_size];
+    // biSize = 40
+    dib_bytes[0..4].copy_from_slice(&40u32.to_le_bytes());
+    // biWidth
+    dib_bytes[4..8].copy_from_slice(&(width as i32).to_le_bytes());
+    // biHeight (positive for bottom-up)
+    dib_bytes[8..12].copy_from_slice(&(height as i32).to_le_bytes());
+    // biPlanes = 1
+    dib_bytes[12..14].copy_from_slice(&1u16.to_le_bytes());
+    // biBitCount = 32
+    dib_bytes[14..16].copy_from_slice(&32u16.to_le_bytes());
+    // biCompression = BI_RGB (0)
+    dib_bytes[16..20].copy_from_slice(&0u32.to_le_bytes());
+    // biSizeImage
+    dib_bytes[20..24].copy_from_slice(&(image_size as u32).to_le_bytes());
+
+    // Write pixels bottom-up, converting RGBA to BGRA
+    for y in 0..height {
+        let src_row = height - 1 - y;
+        let dst_row_offset = 40 + y * row_stride;
+        for x in 0..width {
+            let src_idx = (src_row * width + x) * 4;
+            let dst_idx = dst_row_offset + x * 4;
+            let r = raw_rgba[src_idx];
+            let g = raw_rgba[src_idx + 1];
+            let b = raw_rgba[src_idx + 2];
+            let a = raw_rgba[src_idx + 3];
+            dib_bytes[dst_idx] = b;
+            dib_bytes[dst_idx + 1] = g;
+            dib_bytes[dst_idx + 2] = r;
+            dib_bytes[dst_idx + 3] = a;
+        }
+    }
+
+    unsafe {
+        // Retry OpenClipboard in case another application holds it momentarily
+        let mut opened = false;
+        for _ in 0..10 {
+            if OpenClipboard(None).is_ok() {
+                opened = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        if !opened {
+            return Err("could not open Windows clipboard to write image".into());
+        }
+
+        struct ClipboardGuard;
+        impl Drop for ClipboardGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = CloseClipboard();
+                }
+            }
+        }
+        let _guard = ClipboardGuard;
+
+        let _ = EmptyClipboard();
+
+        // 1. Set standard CF_DIB (Format 8) for Paint, Word, and native Windows viewers
+        const CF_DIB: u32 = 8;
+        if let Ok(hglobal) = GlobalAlloc(GMEM_MOVEABLE, dib_bytes.len()) {
+            let locked = GlobalLock(hglobal);
+            if !locked.is_null() {
+                std::ptr::copy_nonoverlapping(dib_bytes.as_ptr(), locked as *mut u8, dib_bytes.len());
+                let _ = GlobalUnlock(hglobal);
+                let _ = SetClipboardData(CF_DIB, Some(HANDLE(hglobal.0)));
+            }
+        }
+
+        // 2. Set registered "PNG" format (with alpha channel for Discord, browsers, Slack)
+        let png_format = RegisterClipboardFormatW(w!("PNG"));
+        if png_format != 0 {
+            if let Ok(hglobal) = GlobalAlloc(GMEM_MOVEABLE, png_bytes.len()) {
+                let locked = GlobalLock(hglobal);
+                if !locked.is_null() {
+                    std::ptr::copy_nonoverlapping(png_bytes.as_ptr(), locked as *mut u8, png_bytes.len());
+                    let _ = GlobalUnlock(hglobal);
+                    let _ = SetClipboardData(png_format, Some(HANDLE(hglobal.0)));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+pub fn write_clipboard_image(png_bytes: &[u8]) -> Result<(), String> {
+    let img = image::load_from_memory(png_bytes)
+        .map_err(|e| format!("failed to decode PNG bytes: {e}"))?
+        .to_rgba8();
+    let width = img.width() as usize;
+    let height = img.height() as usize;
+    let bytes = img.into_raw();
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard
+        .set_image(arboard::ImageData {
+            width,
+            height,
+            bytes: std::borrow::Cow::Owned(bytes),
+        })
+        .map_err(|e| e.to_string())
+}
