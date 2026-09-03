@@ -65,6 +65,28 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
     });
   };
 
+  const handleTitlebarMouseDown = (e: React.MouseEvent) => {
+    if (
+      e.button !== 0 ||
+      (e.target as HTMLElement).closest("button, input, select, textarea, [role='button']")
+    ) {
+      return;
+    }
+
+    e.preventDefault();
+
+    if (e.detail === 2) {
+      toggleMaximize();
+      return;
+    }
+
+    if (e.detail === 1) {
+      invoke("begin_window_drag").catch((err) => {
+        console.warn("Could not start window drag", err);
+      });
+    }
+  };
+
   const handleToggleMaximize = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!appWindow) return;
@@ -83,7 +105,8 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
   return (
     <div
       data-window-chrome
-      className="native-window-drag-region h-9 w-full bg-card border-b flex items-center justify-between select-none z-[60] sticky top-0 cursor-default"
+      onMouseDown={handleTitlebarMouseDown}
+      className="h-9 w-full bg-card border-b flex items-center justify-between select-none z-[60] sticky top-0 cursor-default"
     >
       {/* App Branding (Draggable) */}
       <div className="flex items-center gap-2 px-3 h-full select-none shrink-0 pointer-events-none">

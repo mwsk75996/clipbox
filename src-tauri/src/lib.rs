@@ -122,6 +122,37 @@ fn minimize_window(window: tauri::Window) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn begin_window_drag(window: tauri::Window) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            PostMessageW, HTCAPTION, SC_MOVE, WM_SYSCOMMAND,
+        };
+
+        let raw_hwnd = window.hwnd().map_err(|error| error.to_string())?;
+        let hwnd = HWND(raw_hwnd.0 as _);
+
+        unsafe {
+            let _ = ReleaseCapture();
+            PostMessageW(
+                Some(hwnd),
+                WM_SYSCOMMAND,
+                WPARAM((SC_MOVE | HTCAPTION) as usize),
+                LPARAM(0),
+            )
+            .map_err(|error| error.to_string())
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        window.start_dragging().map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
 fn close_window(window: tauri::Window) -> Result<(), String> {
     // Hide to system tray instead of terminating the app
     window.hide().map_err(|error| error.to_string())
@@ -955,6 +986,7 @@ pub fn run() {
             delete_entry,
             toggle_pinned,
             minimize_window,
+            begin_window_drag,
             close_window,
             hide_window,
             show_window,
