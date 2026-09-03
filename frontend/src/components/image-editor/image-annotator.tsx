@@ -1103,16 +1103,7 @@ export function ImageAnnotator({
       {/* Top Editor Command Bar */}
       <div
         data-window-chrome
-        onMouseDown={(e) => {
-          if (
-            e.button === 0 &&
-            !(e.target as HTMLElement).closest("button, input, [role='dialog'], [role='menu']") &&
-            "__TAURI_INTERNALS__" in window
-          ) {
-            invoke("begin_window_drag").catch(console.warn);
-          }
-        }}
-        className="h-14 w-full bg-card border-b px-4 flex items-center justify-between gap-3 shrink-0 shadow-sm select-none flex-nowrap"
+        className="native-window-drag-region h-14 w-full bg-card border-b px-4 flex items-center justify-between gap-3 shrink-0 shadow-sm select-none flex-nowrap"
       >
         {/* Left: Contextual Tool Controls */}
         {activeTool === "crop" ? (

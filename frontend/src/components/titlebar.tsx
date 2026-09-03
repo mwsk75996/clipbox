@@ -52,11 +52,11 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
 
   const toggleMaximize = React.useCallback(() => {
     setIsMaximized((current) => !current);
-    invoke("toggle_maximize_window").catch((err) => {
+    appWindow?.toggleMaximize().catch((err) => {
       console.warn("Could not toggle maximize", err);
       void syncMaximizedState();
     });
-  }, [syncMaximizedState]);
+  }, [appWindow, syncMaximizedState]);
 
   const handleMinimize = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -83,7 +83,7 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
   return (
     <div
       data-window-chrome
-      className="h-9 w-full bg-card border-b flex items-center justify-between select-none z-[60] sticky top-0 cursor-default"
+      className="native-window-drag-region h-9 w-full bg-card border-b flex items-center justify-between select-none z-[60] sticky top-0 cursor-default"
     >
       {/* App Branding (Draggable) */}
       <div className="flex items-center gap-2 px-3 h-full select-none shrink-0 pointer-events-none">
@@ -113,7 +113,7 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
 
       {/* Window Controls (Not draggable) */}
       <div
-        className="flex items-center h-full pointer-events-auto shrink-0 min-w-[100px] justify-end"
+        className="native-window-no-drag flex items-center h-full pointer-events-auto shrink-0 min-w-[100px] justify-end"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <button

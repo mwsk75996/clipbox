@@ -12,7 +12,6 @@ mod clipboard;
 mod file_clipboard;
 mod image_clipboard;
 mod source;
-mod window_chrome;
 
 struct AppState {
     database_path: PathBuf,
@@ -120,74 +119,6 @@ fn toggle_pinned(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, Str
 #[tauri::command]
 fn minimize_window(window: tauri::Window) -> Result<(), String> {
     window.minimize().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn toggle_maximize_window(window: tauri::Window) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            IsZoomed, ShowWindow, SW_MAXIMIZE, SW_RESTORE,
-        };
-
-        let raw_hwnd = window.hwnd().map_err(|error| error.to_string())?;
-        let hwnd = HWND(raw_hwnd.0 as _);
-        let command = if unsafe { IsZoomed(hwnd).as_bool() } {
-            SW_RESTORE
-        } else {
-            SW_MAXIMIZE
-        };
-
-        unsafe {
-            let _ = ShowWindow(hwnd, command);
-        }
-        Ok(())
-    }
-
-    #[cfg(not(windows))]
-    {
-        if window.is_maximized().unwrap_or(false) {
-            window.unmaximize().map_err(|error| error.to_string())
-        } else {
-            window.maximize().map_err(|error| error.to_string())
-        }
-    }
-}
-
-#[tauri::command]
-fn begin_window_drag(window: tauri::Window) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
-        use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            GetCursorPos, PostMessageW, HTCAPTION, WM_NCLBUTTONDOWN,
-        };
-
-        let raw_hwnd = window.hwnd().map_err(|error| error.to_string())?;
-        let hwnd = HWND(raw_hwnd.0 as _);
-        let mut cursor = POINT::default();
-        unsafe { GetCursorPos(&mut cursor) }.map_err(|error| error.to_string())?;
-        let coordinates =
-            ((cursor.y as u16 as u32) << 16) | cursor.x as u16 as u32;
-
-        unsafe {
-            let _ = ReleaseCapture();
-            PostMessageW(
-                Some(hwnd),
-                WM_NCLBUTTONDOWN,
-                WPARAM(HTCAPTION as usize),
-                LPARAM(coordinates as isize),
-            )
-            .map_err(|error| error.to_string())
-        }
-    }
-
-    #[cfg(not(windows))]
-    {
-        window.start_dragging().map_err(|error| error.to_string())
-    }
 }
 
 #[tauri::command]
@@ -979,10 +910,6 @@ pub fn run() {
 
             // Initial window visibility and development connection error handling
             if let Some(window) = app.get_webview_window("main") {
-                if let Err(error) = window_chrome::install(&window) {
-                    eprintln!("could not install native titlebar hit testing: {error}");
-                }
-
                 let _ = window.set_min_size(Some(tauri::LogicalSize::new(900.0, 700.0)));
                 if let Ok(size) = window.inner_size() {
                     if let Ok(scale_factor) = window.scale_factor() {
@@ -1028,8 +955,6 @@ pub fn run() {
             delete_entry,
             toggle_pinned,
             minimize_window,
-            toggle_maximize_window,
-            begin_window_drag,
             close_window,
             hide_window,
             show_window,

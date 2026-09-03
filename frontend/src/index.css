@@ -9,6 +9,24 @@
 @tailwind components;
 @tailwind utilities;
 
+/* WebView2 native non-client regions: Windows owns drag and double-click handling. */
+.native-window-drag-region {
+  app-region: drag;
+  -webkit-app-region: drag;
+}
+
+.native-window-no-drag,
+.native-window-drag-region button,
+.native-window-drag-region input,
+.native-window-drag-region select,
+.native-window-drag-region textarea,
+.native-window-drag-region [role="button"],
+.native-window-drag-region [role="dialog"],
+.native-window-drag-region [role="menu"] {
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
+
 @layer base {
   :root {
     --background: 45 14% 96%;
