@@ -325,6 +325,15 @@ fn copy_image_to_clipboard(data_url: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+// ----------
+// Application Restart Command
+// Description: Restarts the Clipbox application process cleanly via Tauri AppHandle.
+// ----------
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    app.restart();
+}
+
 /// Run the Clipbox desktop application.
 pub fn run() {
     tauri::Builder::default()
@@ -401,8 +410,27 @@ pub fn run() {
 
             let _tray = tray_builder.build(app)?;
 
-            // Initial window visibility based on start_minimized preference
+            // Initial window visibility and development connection error handling
             if let Some(window) = app.get_webview_window("main") {
+                #[cfg(debug_assertions)]
+                {
+                    use std::net::{SocketAddr, TcpStream};
+                    use std::time::Duration;
+
+                    let dev_addr: SocketAddr = "127.0.0.1:1420".parse().unwrap();
+                    let is_dev_running = TcpStream::connect_timeout(&dev_addr, Duration::from_millis(350)).is_ok();
+                    if !is_dev_running {
+                        use base64::engine::general_purpose::STANDARD;
+                        use base64::Engine;
+                        let html = include_str!("fallback_error.html");
+                        let b64 = STANDARD.encode(html.as_bytes());
+                        let data_url = format!("data:text/html;base64,{b64}");
+                        if let Ok(url) = data_url.parse() {
+                            let _ = window.navigate(url);
+                        }
+                    }
+                }
+
                 if !is_minimized {
                     let _ = window.show();
                     let _ = window.set_focus();
@@ -435,7 +463,8 @@ pub fn run() {
             get_database_path,
             open_database_directory,
             get_retention_limit,
-            set_retention_limit
+            set_retention_limit,
+            restart_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clipbox");
