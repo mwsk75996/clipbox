@@ -21,6 +21,7 @@ import {
   ZoomIn,
   Files,
   PauseCircle,
+  ExternalLink,
 } from "lucide-react";
 import { startOfDay, endOfDay } from "date-fns";
 import type { DateRange } from "react-day-picker";
@@ -72,6 +73,7 @@ export interface ClipboardEntry {
   imageData?: string | null;
   imageDimensions?: string | null;
   filesData?: string | null;
+  sourceUrl?: string | null;
 }
 
 const PREVIEW_ENTRIES: ClipboardEntry[] = [
@@ -83,6 +85,7 @@ const PREVIEW_ENTRIES: ClipboardEntry[] = [
     sourceApp: "Brave",
     sourceProcess: "brave.exe",
     windowTitle: "Clipbox · GitHub",
+    sourceUrl: "https://github.com/mwsk75996/clipbox",
   },
   {
     id: 2,
@@ -107,6 +110,26 @@ function formatTimestamp(timestamp: number): string {
     dateStyle: "medium",
     timeStyle: "short",
   });
+}
+
+function formatSourceUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+function isWebUrl(text?: string | null): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+  return (
+    (trimmed.startsWith("http://") || trimmed.startsWith("https://")) &&
+    !trimmed.includes("\n") &&
+    !trimmed.includes(" ") &&
+    trimmed.length > 8
+  );
 }
 
 function sourceLabel(entry: ClipboardEntry): string {
@@ -178,6 +201,18 @@ export default function App() {
       }
     } catch (err) {
       console.error("Failed to resume monitoring", err);
+    }
+  };
+
+  const handleOpenUrl = async (url: string) => {
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("open_url", { url });
+      } else {
+        window.open(url, "_blank");
+      }
+    } catch (err) {
+      console.error("Failed to open source URL:", err);
     }
   };
 
@@ -270,6 +305,9 @@ export default function App() {
       : null;
 
     return entries.filter((entry) => {
+      const effectiveUrl =
+        entry.sourceUrl || (isWebUrl(entry.content) ? entry.content.trim() : null);
+
       const matchesSearch =
         !query ||
         [
@@ -277,6 +315,8 @@ export default function App() {
           entry.sourceApp,
           entry.sourceProcess,
           entry.windowTitle,
+          entry.sourceUrl,
+          effectiveUrl,
         ].some((val) => val?.toLowerCase().includes(query));
 
       const matchesApp =
@@ -531,8 +571,10 @@ export default function App() {
       if (matchesBinding(event, shortcuts.expand_preview) && focusedIndex !== null && filteredEntries[focusedIndex]) {
         event.preventDefault();
         const targetEntry = filteredEntries[focusedIndex];
-        const lines = stripLeadingEmptyLines(targetEntry.content).split(/\r?\n/);
-        if (lines.length > 1) {
+        const content = stripLeadingEmptyLines(targetEntry.content);
+        const lines = content.split(/\r?\n/);
+        const isExpandable = lines.length > 1 || content.length > 90;
+        if (isExpandable) {
           setExpandedId((prev) => (prev === targetEntry.id ? null : targetEntry.id));
         }
         return;
@@ -611,10 +653,10 @@ export default function App() {
   // Handle card expansion while preventing collapse when selecting/marking text
   const handleCardClick = (
     id: number,
-    isMultiLine: boolean,
+    isExpandable: boolean,
     e: React.MouseEvent
   ) => {
-    if (!isMultiLine) return;
+    if (!isExpandable) return;
 
     // Ignore clicks on buttons
     if ((e.target as HTMLElement).closest("button")) return;
@@ -799,7 +841,7 @@ export default function App() {
                 {filteredEntries.map((entry, index) => {
                   const content = stripLeadingEmptyLines(entry.content);
                   const lines = content.split(/\r?\n/);
-                  const isMultiLine = lines.length > 1;
+                  const isExpandable = lines.length > 1 || content.length > 90;
                   const isExpanded = expandedId === entry.id;
                   const isFocused = focusedIndex === index;
                   const appName = sourceLabel(entry);
@@ -810,7 +852,7 @@ export default function App() {
                       data-card-index={index}
                       onClick={(e) => {
                         setFocusedIndex(null);
-                        handleCardClick(entry.id, isMultiLine, e);
+                        handleCardClick(entry.id, isExpandable, e);
                       }}
                       className={`transition-all border hover:border-primary/40 cursor-pointer shadow-sm ${
                         isFocused
@@ -942,6 +984,29 @@ export default function App() {
                               </CardDescription>
                             </>
                           )}
+                          {(() => {
+                            const effectiveUrl =
+                              entry.sourceUrl ||
+                              (isWebUrl(entry.content) ? entry.content.trim() : null);
+                            if (!effectiveUrl) return null;
+                            return (
+                              <>
+                                <span className="text-xs text-muted-foreground">·</span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenUrl(effectiveUrl);
+                                  }}
+                                  title={`Open original URL: ${effectiveUrl}`}
+                                  className="inline-flex items-center gap-1 text-xs text-primary/80 hover:text-primary hover:underline max-w-[200px] truncate transition-colors cursor-pointer group"
+                                >
+                                  <ExternalLink className="size-3 shrink-0 opacity-70 group-hover:opacity-100" />
+                                  <span className="truncate">{formatSourceUrl(effectiveUrl)}</span>
+                                </button>
+                              </>
+                            );
+                          })()}
                         </div>
 
                         <div className="flex items-center gap-1 shrink-0">
@@ -1043,14 +1108,14 @@ export default function App() {
                                   e.stopPropagation();
                                 }
                               }}
-                              className={`text-sm font-dmsans font-normal tracking-normal leading-relaxed whitespace-pre-wrap break-all select-text cursor-text ${
-                                !isExpanded && isMultiLine ? "line-clamp-1" : ""
+                              className={`text-sm font-dmsans font-normal tracking-normal leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] select-text cursor-text ${
+                                !isExpanded && isExpandable ? "line-clamp-1" : ""
                               }`}
                             >
-                              {isExpanded ? content : lines[0]}
+                              {isExpanded ? content : (lines.length > 1 ? lines[0] : content)}
                             </div>
 
-                            {isMultiLine && (
+                            {isExpandable && (
                               <div
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -1066,7 +1131,11 @@ export default function App() {
                                 ) : (
                                   <>
                                     <ChevronDown className="size-3" />
-                                    <span>+{lines.length - 1} more lines</span>
+                                    <span>
+                                      {lines.length > 1
+                                        ? `+${lines.length - 1} more lines`
+                                        : "Show more"}
+                                    </span>
                                   </>
                                 )}
                               </div>
