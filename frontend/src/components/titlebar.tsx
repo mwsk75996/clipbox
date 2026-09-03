@@ -41,13 +41,21 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
     // Ignore clicks on buttons
     if ((event.target as HTMLElement).closest("button")) return;
 
-    // Programmatically start window dragging via native Tauri IPC
-    try {
-      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-        invoke("start_dragging").catch(() => {});
+    // Instantly toggle maximize on the second click of a double-click!
+    if (event.detail === 2) {
+      handleToggleMaximize();
+      return;
+    }
+
+    // Only start dragging on single click (detail === 1)
+    if (event.detail === 1) {
+      try {
+        if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+          invoke("start_dragging").catch(() => {});
+        }
+      } catch (err) {
+        console.warn("Could not start dragging", err);
       }
-    } catch (err) {
-      console.warn("Could not start dragging", err);
     }
   };
 
@@ -64,7 +72,7 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
     e?.stopPropagation();
     const now = Date.now();
     // Debounce rapid successive toggles to prevent animation double-trigger
-    if (now - lastToggleRef.current < 400) return;
+    if (now - lastToggleRef.current < 200) return;
     lastToggleRef.current = now;
 
     try {
@@ -88,6 +96,7 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
     <div
       data-tauri-drag-region
       onMouseDown={handleMouseDown}
+      onDoubleClick={handleToggleMaximize}
       className="h-9 w-full bg-card border-b flex items-center justify-between select-none z-[60] sticky top-0 cursor-default"
     >
       {/* App Branding (Draggable) */}

@@ -131,7 +131,7 @@ fn toggle_maximize_window(window: tauri::Window) -> Result<(), String> {
         .unwrap_or_else(|e| e.into_inner());
     let now = std::time::Instant::now();
     if let Some(last) = *guard {
-        if now.duration_since(last) < std::time::Duration::from_millis(400) {
+        if now.duration_since(last) < std::time::Duration::from_millis(200) {
             return Ok(());
         }
     }
@@ -173,17 +173,17 @@ fn start_dragging(window: tauri::Window) -> Result<(), String> {
     {
         use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
         use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
-        use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN};
+        use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, HTCAPTION, WM_NCLBUTTONDOWN};
 
         if let Ok(raw_hwnd) = window.hwnd() {
             unsafe {
                 let _ = ReleaseCapture();
                 let hwnd = HWND(raw_hwnd.0 as _);
-                SendMessageW(
-                    hwnd,
+                let _ = PostMessageW(
+                    Some(hwnd),
                     WM_NCLBUTTONDOWN,
-                    Some(WPARAM(HTCAPTION as usize)),
-                    Some(LPARAM(0)),
+                    WPARAM(HTCAPTION as usize),
+                    LPARAM(0),
                 );
                 return Ok(());
             }
