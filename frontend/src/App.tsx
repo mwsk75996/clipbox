@@ -139,6 +139,8 @@ export default function App() {
 
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const deletedIdsRef = React.useRef<Set<number>>(new Set());
+  const lastMousePosRef = React.useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const lastKeyboardNavTimeRef = React.useRef<number>(0);
 
   // Restore Always on Top preference on startup
   React.useEffect(() => {
@@ -448,6 +450,7 @@ export default function App() {
       // Arrow Down: Navigate downward through feed
       if (event.key === "ArrowDown") {
         event.preventDefault();
+        lastKeyboardNavTimeRef.current = Date.now();
         if (filteredEntries.length === 0) return;
         setFocusedIndex((prev) => {
           if (prev === null) return 0;
@@ -459,6 +462,7 @@ export default function App() {
       // Arrow Up: Navigate upward or return to search bar
       if (event.key === "ArrowUp") {
         event.preventDefault();
+        lastKeyboardNavTimeRef.current = Date.now();
         setFocusedIndex((prev) => {
           if (prev === null || prev === 0) {
             searchInputRef.current?.focus();
@@ -525,11 +529,36 @@ export default function App() {
       event.preventDefault();
     };
 
+    // Moving or clicking the mouse clears the keyboard navigation highlight line
+    const handleMouseMove = (event: MouseEvent) => {
+      if (
+        event.clientX === lastMousePosRef.current.x &&
+        event.clientY === lastMousePosRef.current.y
+      ) {
+        return;
+      }
+      lastMousePosRef.current = { x: event.clientX, y: event.clientY };
+
+      if (Date.now() - lastKeyboardNavTimeRef.current < 150) {
+        return;
+      }
+
+      setFocusedIndex((prev) => (prev !== null ? null : prev));
+    };
+
+    const handlePointerDown = () => {
+      setFocusedIndex((prev) => (prev !== null ? null : prev));
+    };
+
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("contextmenu", handleContextMenu);
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("pointerdown", handlePointerDown);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("contextmenu", handleContextMenu);
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("pointerdown", handlePointerDown);
     };
   }, [filteredEntries, focusedIndex, previewEntry, searchQuery, hasActiveFilters]);
 
@@ -715,7 +744,7 @@ export default function App() {
                       key={entry.id}
                       data-card-index={index}
                       onClick={(e) => {
-                        setFocusedIndex(index);
+                        setFocusedIndex(null);
                         handleCardClick(entry.id, isMultiLine, e);
                       }}
                       className={`transition-all border hover:border-primary/40 cursor-pointer shadow-sm ${
