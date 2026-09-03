@@ -11,13 +11,14 @@ import clipboxLogo from "@/assets/clipbox-logo.png";
 
 interface TitlebarProps {
   entriesCount?: number;
+  onCloseRequest?: () => void;
 }
 
 // Titlebar height is h-9 (36px). Restored windows are positioned so the
 // cursor lands mid-titlebar during a pull-down restore-drag.
 const TITLEBAR_GRAB_OFFSET = 18;
 
-export function Titlebar({ entriesCount }: TitlebarProps) {
+export function Titlebar({ entriesCount, onCloseRequest }: TitlebarProps) {
   const [isMaximized, setIsMaximized] = React.useState(false);
   const appWindow = React.useMemo(() => {
     if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
@@ -167,13 +168,16 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
     window.addEventListener("mouseup", handleUp);
   };
 
-  const handleClose = async (e: React.MouseEvent) => {
+  const handleClose = (e: React.MouseEvent) => {
     e.stopPropagation();
-    try {
-      await invoke("hide_window");
-    } catch (err) {
-      console.warn("Could not hide window", err);
+    if (onCloseRequest) {
+      onCloseRequest();
+      return;
     }
+    // Standalone fallback (e.g. error boundary): hide without prompting.
+    invoke("hide_window").catch((err) => {
+      console.warn("Could not hide window", err);
+    });
   };
 
   return (

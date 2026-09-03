@@ -189,6 +189,9 @@ export function SettingsModal({
     return localStorage.getItem("clipbox:deletedRetention") || "7days";
   });
   const [purgedNotice, setPurgedNotice] = React.useState<number | null>(null);
+  const [closeBehavior, setCloseBehavior] = React.useState(() => {
+    return localStorage.getItem("clipbox:closeBehavior") || "ask";
+  });
 
   const [confirmClear, setConfirmClear] = React.useState(false);
   const [clearing, setClearing] = React.useState(false);
@@ -235,6 +238,10 @@ export function SettingsModal({
           const realDeletedRetention = await invoke<string>("get_deleted_retention");
           setDeletedRetention(realDeletedRetention);
           localStorage.setItem("clipbox:deletedRetention", realDeletedRetention);
+
+          const realCloseBehavior = await invoke<string>("get_close_behavior");
+          setCloseBehavior(realCloseBehavior);
+          localStorage.setItem("clipbox:closeBehavior", realCloseBehavior);
 
           const privacy = await invoke<PrivacySettings>("get_privacy_settings");
           setMonitoringPaused(privacy.monitoring_paused);
@@ -437,6 +444,18 @@ export function SettingsModal({
     }
   };
 
+  const handleCloseBehaviorChange = async (value: string) => {
+    setCloseBehavior(value);
+    localStorage.setItem("clipbox:closeBehavior", value);
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("set_close_behavior", { behavior: value });
+      }
+    } catch (err) {
+      console.error("Failed to update close behavior", err);
+    }
+  };
+
   const handleCopyPath = () => {
     navigator.clipboard.writeText(dbPath);
     setCopiedPath(true);
@@ -559,6 +578,28 @@ export function SettingsModal({
                   checked={alwaysOnTop}
                   onCheckedChange={handleToggleAlwaysOnTop}
                 />
+              </div>
+
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-0.5">
+                  <label className="text-sm font-medium">Close button action</label>
+                  <p className="text-xs text-muted-foreground">
+                    What happens when you press the titlebar close button.
+                  </p>
+                </div>
+                <Select
+                  value={closeBehavior}
+                  onValueChange={handleCloseBehaviorChange}
+                >
+                  <SelectTrigger className="w-[150px] h-8 text-xs shrink-0">
+                    <SelectValue placeholder="Select action" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ask">Ask every time</SelectItem>
+                    <SelectItem value="hide">Hide to tray</SelectItem>
+                    <SelectItem value="quit">Quit app</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
           </div>

@@ -358,6 +358,38 @@ fn show_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// ----------
+// Close Behavior Setting Commands
+// Description: Queries and updates what the titlebar close button and native close requests do: ask every time, hide to tray, or quit the app.
+// ----------
+
+/// Stored close-button policy, defaulting to asking every time.
+fn close_behavior_setting(store: &ClipboardStore) -> String {
+    store
+        .get_setting("close_behavior")
+        .unwrap_or_default()
+        .unwrap_or_else(|| "ask".into())
+}
+
+#[tauri::command]
+fn get_close_behavior(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    Ok(close_behavior_setting(&store))
+}
+
+#[tauri::command]
+fn set_close_behavior(state: tauri::State<'_, AppState>, behavior: String) -> Result<(), String> {
+    if !matches!(behavior.as_str(), "ask" | "hide" | "quit") {
+        return Err(format!("invalid close behavior: {behavior}"));
+    }
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    store
+        .set_setting("close_behavior", &behavior)
+        .map_err(|error| format!("could not save close behavior setting: {error}"))
+}
+
 #[tauri::command]
 fn exit_app(app: tauri::AppHandle) {
     app.exit(0);
@@ -1177,11 +1209,25 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Hide-to-tray policy covers native close requests (Alt+F4).
-                // Explicit Quit still terminates via app.exit(), which emits
-                // no close request.
+                // Close-button policy also governs native close requests (Alt+F4):
+                // "hide" keeps the established hide-to-tray behavior, "quit"
+                // lets the request through so the process terminates, and "ask"
+                // defers to the frontend prompt. Unreadable settings fail safe
+                // to hide, never to quit.
+                let app = window.app_handle();
+                let behavior = ClipboardStore::open(&app.state::<AppState>().database_path)
+                    .map(|store| close_behavior_setting(&store))
+                    .unwrap_or_else(|_| "hide".into());
+
+                if behavior == "quit" {
+                    return;
+                }
                 api.prevent_close();
-                let _ = window.hide();
+                if behavior == "ask" {
+                    let _ = app.emit("window://close-requested", ());
+                } else {
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -1198,6 +1244,8 @@ pub fn run() {
             start_dragging,
             hide_window,
             show_window,
+            get_close_behavior,
+            set_close_behavior,
             exit_app,
             copy_to_clipboard,
             copy_image_to_clipboard,
