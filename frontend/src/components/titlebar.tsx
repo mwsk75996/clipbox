@@ -41,9 +41,6 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
     // Ignore clicks on buttons
     if ((event.target as HTMLElement).closest("button")) return;
 
-    // Ignore double/triple clicks on mousedown (handled cleanly by onDoubleClick)
-    if (event.detail > 1) return;
-
     // Programmatically start window dragging via native Tauri IPC
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
@@ -91,7 +88,6 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
     <div
       data-tauri-drag-region
       onMouseDown={handleMouseDown}
-      onDoubleClick={handleToggleMaximize}
       className="h-9 w-full bg-card border-b flex items-center justify-between select-none z-[60] sticky top-0 cursor-default"
     >
       {/* App Branding (Draggable) */}

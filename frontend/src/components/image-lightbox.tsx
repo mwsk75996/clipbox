@@ -1,6 +1,6 @@
 // ----------
 // Image Lightbox Modal Component
-// Description: Full-resolution image preview lightbox with fit/actual size zoom toggle, metadata badges (source app/screen capture, dimensions, timestamp), copy to clipboard, and native save as file action.
+// Description: Full-resolution interactive image lightbox with cursor-centered mouse wheel zoom, click-and-drag panning, quick zoom controls, double-click toggle, and metadata badges.
 // ----------
 
 import * as React from "react";
@@ -10,10 +10,11 @@ import {
   Copy,
   Check,
   Download,
-  ZoomIn,
-  ZoomOut,
   X,
   Pencil,
+  Plus,
+  Minus,
+  RotateCcw,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -35,27 +36,50 @@ export function ImageLightbox({
   formatTimestamp,
 }: ImageLightboxProps) {
   const [isEditing, setIsEditing] = React.useState(false);
-  const [isZoomed, setIsZoomed] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [saveMessage, setSaveMessage] = React.useState<string | null>(null);
 
+  // Zoom & Pan interactive state
+  const [zoom, setZoom] = React.useState<number>(1);
+  const [pan, setPan] = React.useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = React.useState<boolean>(false);
+
+  const stageRef = React.useRef<HTMLDivElement>(null);
+  const dragStartPosRef = React.useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const dragStartPanRef = React.useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const hasMovedRef = React.useRef<boolean>(false);
+
   const prevEntryIdRef = React.useRef<number | undefined>(undefined);
   const prevIsOpenRef = React.useRef(false);
 
-  // Reset zoom and edit state ONLY when modal opens afresh or when switching to a different clip
+  // Reset zoom, pan, and edit state ONLY when modal opens afresh or when switching to a different clip
   React.useEffect(() => {
     if (isOpen && (!prevIsOpenRef.current || prevEntryIdRef.current !== entry?.id)) {
       setIsEditing(false);
-      setIsZoomed(false);
       setCopied(false);
       setSaveMessage(null);
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
     }
     prevIsOpenRef.current = isOpen;
     prevEntryIdRef.current = entry?.id;
   }, [isOpen, entry?.id]);
 
-  // Keyboard shortcut listener for Esc
+  const handleResetZoom = React.useCallback(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, []);
+
+  const handleZoomIn = React.useCallback(() => {
+    setZoom((z) => Math.min(10, z * 1.25));
+  }, []);
+
+  const handleZoomOut = React.useCallback(() => {
+    setZoom((z) => Math.max(0.2, z / 1.25));
+  }, []);
+
+  // Keyboard shortcut listener for Esc and Zoom (+, -, 0)
   React.useEffect(() => {
     if (!isOpen) return;
 
@@ -63,12 +87,21 @@ export function ImageLightbox({
       if (e.key === "Escape") {
         e.preventDefault();
         onClose();
+      } else if (e.key === "+" || e.key === "=") {
+        e.preventDefault();
+        handleZoomIn();
+      } else if (e.key === "-" || e.key === "_") {
+        e.preventDefault();
+        handleZoomOut();
+      } else if (e.key === "0") {
+        e.preventDefault();
+        handleResetZoom();
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, handleZoomIn, handleZoomOut, handleResetZoom]);
 
   if (!isOpen || !entry || !entry.imageData) {
     return null;
@@ -149,13 +182,97 @@ export function ImageLightbox({
     }
   };
 
+  // Cursor-centered smooth mouse wheel zoom
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const stage = stageRef.current;
+    if (!stage) return;
+
+    const zoomFactor = e.deltaY < 0 ? 1.18 : 1 / 1.18;
+    const newZoom = Math.min(10, Math.max(0.2, zoom * zoomFactor));
+
+    const rect = stage.getBoundingClientRect();
+    const mx = e.clientX - rect.left - rect.width / 2;
+    const my = e.clientY - rect.top - rect.height / 2;
+
+    const scaleRatio = newZoom / zoom;
+    setPan((prev) => ({
+      x: mx - (mx - prev.x) * scaleRatio,
+      y: my - (my - prev.y) * scaleRatio,
+    }));
+    setZoom(newZoom);
+  };
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    setIsDragging(true);
+    hasMovedRef.current = false;
+    dragStartPosRef.current = { x: e.clientX, y: e.clientY };
+    dragStartPanRef.current = { ...pan };
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {}
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!isDragging) return;
+    const dx = e.clientX - dragStartPosRef.current.x;
+    const dy = e.clientY - dragStartPosRef.current.y;
+    if (Math.hypot(dx, dy) > 3) {
+      hasMovedRef.current = true;
+    }
+    setPan({
+      x: dragStartPanRef.current.x + dx,
+      y: dragStartPanRef.current.y + dy,
+    });
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if ((e.currentTarget as HTMLElement)?.hasPointerCapture?.(e.pointerId)) {
+      try {
+        (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+      } catch {}
+    }
+    setIsDragging(false);
+
+    // If pure click without dragging:
+    if (!hasMovedRef.current) {
+      const target = e.target as HTMLElement;
+      // If clicked backdrop (not the image container), close the lightbox
+      if (!target.closest("[data-image-container]")) {
+        onClose();
+      }
+    }
+  };
+
+  const handleDoubleClickImage = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (zoom === 1 && pan.x === 0 && pan.y === 0) {
+      const stage = stageRef.current;
+      if (!stage) return;
+      const rect = stage.getBoundingClientRect();
+      const mx = e.clientX - rect.left - rect.width / 2;
+      const my = e.clientY - rect.top - rect.height / 2;
+      const newZoom = 2.5;
+      const scaleRatio = newZoom / zoom;
+      setPan({
+        x: mx - (mx - pan.x) * scaleRatio,
+        y: my - (my - pan.y) * scaleRatio,
+      });
+      setZoom(newZoom);
+    } else {
+      handleResetZoom();
+    }
+  };
+
   return (
     <div
       role="dialog"
       aria-modal="true"
       aria-label="Image Preview Lightbox"
       className="fixed top-9 inset-x-0 bottom-0 z-40 flex flex-col bg-black/85 backdrop-blur-md animate-in fade-in-0 duration-200"
-      onClick={onClose}
     >
       {/* Top Action Bar */}
       <div
@@ -217,32 +334,59 @@ export function ImageLightbox({
         </div>
 
         {/* Right: Actions */}
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           {saveMessage && (
             <span className="text-xs font-medium text-emerald-400 animate-in fade-in-0 slide-in-from-right-2 duration-150 mr-2">
               {saveMessage}
             </span>
           )}
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setIsZoomed((prev) => !prev)}
-            title={isZoomed ? "Fit to view" : "View actual size"}
-            className="h-8 gap-1.5 text-xs font-medium"
-          >
-            {isZoomed ? (
-              <>
-                <ZoomOut className="size-3.5" />
+          {/* Interactive Zoom Controls */}
+          <div className="flex items-center bg-muted/60 border rounded-lg p-0.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleZoomOut}
+              disabled={zoom <= 0.2}
+              className="size-7 rounded"
+              title="Zoom Out (-)"
+            >
+              <Minus className="size-3.5" />
+            </Button>
+
+            <button
+              type="button"
+              onClick={handleResetZoom}
+              title="Click to reset zoom & center (0)"
+              className="px-2 py-0.5 text-xs font-mono font-medium text-muted-foreground hover:text-foreground hover:bg-background/60 rounded transition-colors"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleZoomIn}
+              disabled={zoom >= 10}
+              className="size-7 rounded"
+              title="Zoom In (+)"
+            >
+              <Plus className="size-3.5" />
+            </Button>
+
+            {(zoom !== 1 || pan.x !== 0 || pan.y !== 0) && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleResetZoom}
+                className="h-7 px-2 text-[11px] font-medium text-primary hover:bg-primary/10 ml-0.5"
+                title="Fit to view"
+              >
+                <RotateCcw className="size-3 mr-1" />
                 <span>Fit</span>
-              </>
-            ) : (
-              <>
-                <ZoomIn className="size-3.5" />
-                <span>100%</span>
-              </>
+              </Button>
             )}
-          </Button>
+          </div>
 
           <Button
             variant="outline"
@@ -302,12 +446,25 @@ export function ImageLightbox({
 
       {/* Main Image Stage */}
       <div
-        className="flex-1 min-h-0 overflow-auto flex items-center justify-center py-10 px-8 select-none"
-        onClick={onClose}
+        ref={stageRef}
+        onWheel={handleWheel}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        className={`flex-1 min-h-0 overflow-hidden relative flex items-center justify-center select-none touch-none ${
+          isDragging ? "cursor-grabbing" : "cursor-grab"
+        }`}
       >
         <div
-          className="relative max-h-full max-w-full flex items-center justify-center transition-all duration-150"
-          onClick={(e) => e.stopPropagation()}
+          data-image-container
+          onDoubleClick={handleDoubleClickImage}
+          style={{
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            transformOrigin: "center center",
+            transition: isDragging ? "none" : "transform 0.08s ease-out",
+          }}
+          className="relative flex items-center justify-center pointer-events-auto"
         >
           {/* Subtle Checkerboard backdrop for transparent PNG images */}
           <div
@@ -326,12 +483,8 @@ export function ImageLightbox({
             <img
               src={entry.imageData}
               alt={entry.content}
-              onClick={() => setIsZoomed((prev) => !prev)}
-              className={`transition-all duration-150 rounded-lg select-none ${
-                isZoomed
-                  ? "max-w-none max-h-none cursor-zoom-out"
-                  : "max-w-[calc(88vw)] max-h-[calc(68vh)] object-contain cursor-zoom-in"
-              }`}
+              draggable={false}
+              className="max-w-[calc(88vw)] max-h-[calc(68vh)] object-contain select-none pointer-events-none rounded-lg"
             />
           </div>
         </div>
@@ -352,9 +505,13 @@ export function ImageLightbox({
           )}
         </div>
         <div className="flex items-center gap-2">
-          <span>Click image to toggle zoom</span>
+          <span>Mouse wheel to zoom</span>
           <span>•</span>
-          <span>Press <kbd className="px-1 py-0.5 bg-muted rounded border text-[10px] font-mono">Esc</kbd> or click backdrop to close</span>
+          <span>Click & drag to pan</span>
+          <span>•</span>
+          <span>Double-click to toggle 2.5x</span>
+          <span>•</span>
+          <span>Press <kbd className="px-1 py-0.5 bg-muted rounded border text-[10px] font-mono">Esc</kbd> or click background to close</span>
         </div>
       </div>
     </div>
