@@ -19,12 +19,14 @@ import {
   Image as ImageIcon,
   Camera,
   ZoomIn,
+  Files,
 } from "lucide-react";
 import { startOfDay, endOfDay } from "date-fns";
 import type { DateRange } from "react-day-picker";
 
 import { Titlebar } from "@/components/titlebar";
 import { ImageLightbox } from "@/components/image-lightbox";
+import { FileEntryCard } from "@/components/file-entry-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -63,6 +65,7 @@ export interface ClipboardEntry {
   entryType?: string;
   imageData?: string | null;
   imageDimensions?: string | null;
+  filesData?: string | null;
 }
 
 const PREVIEW_ENTRIES: ClipboardEntry[] = [
@@ -125,10 +128,11 @@ export default function App() {
   const [entries, setEntries] = React.useState<ClipboardEntry[]>([]);
   const [searchQuery, setSearchQuery] = React.useState("");
   const [selectedApp, setSelectedApp] = React.useState<string>("all");
-  const [selectedType, setSelectedType] = React.useState<"all" | "text" | "image">("all");
+  const [selectedType, setSelectedType] = React.useState<"all" | "text" | "image" | "file">("all");
   const [dateRange, setDateRange] = React.useState<DateRange | undefined>();
   const [expandedId, setExpandedId] = React.useState<number | null>(null);
   const [copiedId, setCopiedId] = React.useState<number | null>(null);
+  const [copiedPathId, setCopiedPathId] = React.useState<number | null>(null);
   const [isFilterOpen, setIsFilterOpen] = React.useState(false);
   const [previewEntry, setPreviewEntry] = React.useState<ClipboardEntry | null>(null);
 
@@ -276,7 +280,9 @@ export default function App() {
         selectedType === "all" ||
         (selectedType === "image"
           ? entry.entryType === "image"
-          : entry.entryType !== "image");
+          : selectedType === "file"
+            ? entry.entryType === "file"
+            : entry.entryType !== "image" && entry.entryType !== "file");
 
       let matchesDate = true;
       if (fromTime !== null) {
@@ -314,7 +320,7 @@ export default function App() {
     }
   };
 
-  // Copy entry text or image to clipboard
+  // Copy entry text, image, or files to clipboard
   const handleCopy = async (entry: ClipboardEntry, event?: React.MouseEvent) => {
     event?.stopPropagation();
     try {
@@ -327,6 +333,24 @@ export default function App() {
           await navigator.clipboard.write([
             new ClipboardItem({ [blob.type]: blob }),
           ]);
+        }
+      } else if (entry.entryType === "file") {
+        let paths: string[] = [];
+        try {
+          if (entry.filesData) {
+            const parsed = JSON.parse(entry.filesData);
+            paths = parsed.map((item: { path: string }) => item.path);
+          } else {
+            paths = [entry.content];
+          }
+        } catch {
+          paths = [entry.content];
+        }
+
+        if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+          await invoke("copy_files_to_clipboard", { paths });
+        } else {
+          await navigator.clipboard.writeText(paths.join("\n"));
         }
       } else {
         const content = stripLeadingEmptyLines(entry.content);
@@ -341,6 +365,29 @@ export default function App() {
     } catch (err) {
       console.error("Failed to copy", err);
     }
+  };
+
+  const handleCopyPaths = async (entry: ClipboardEntry, event: React.MouseEvent) => {
+    event.stopPropagation();
+    let paths: string[] = [];
+    try {
+      if (entry.filesData) {
+        const parsed = JSON.parse(entry.filesData);
+        paths = parsed.map((item: { path: string }) => item.path);
+      } else {
+        paths = [entry.content];
+      }
+    } catch {
+      paths = [entry.content];
+    }
+    const text = paths.join("\n");
+    if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+      await invoke("copy_to_clipboard", { text });
+    } else {
+      await navigator.clipboard.writeText(text);
+    }
+    setCopiedPathId(entry.id);
+    setTimeout(() => setCopiedPathId(null), 1500);
   };
 
   // Delete single entry from history and re-sequence remaining higher IDs
@@ -467,7 +514,7 @@ export default function App() {
                   <Select
                     value={selectedType}
                     onValueChange={(val) =>
-                      setSelectedType(val as "all" | "text" | "image")
+                      setSelectedType(val as "all" | "text" | "image" | "file")
                     }
                   >
                     <SelectTrigger className="w-full">
@@ -477,6 +524,7 @@ export default function App() {
                       <SelectItem value="all">All types</SelectItem>
                       <SelectItem value="text">Text only</SelectItem>
                       <SelectItem value="image">Images only</SelectItem>
+                      <SelectItem value="file">Files only</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -562,7 +610,44 @@ export default function App() {
                               Pinned
                             </span>
                           )}
-                          {entry.entryType === "image" ? (
+                          {entry.entryType === "file" ? (
+                            <>
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 select-none">
+                                <Files className="size-2.5" />
+                                Files
+                              </span>
+                              <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                                {entry.appIcon ? (
+                                  <img
+                                    src={entry.appIcon}
+                                    alt={appName}
+                                    width={16}
+                                    height={16}
+                                    className="size-4 object-contain rounded-sm select-none pointer-events-none shrink-0"
+                                  />
+                                ) : (
+                                  <span className="size-4 rounded bg-muted border flex items-center justify-center text-[9px] font-semibold text-muted-foreground uppercase shrink-0 select-none">
+                                    {appName.charAt(0)}
+                                  </span>
+                                )}
+                                <span>{appName}</span>
+                              </div>
+                              {entry.windowTitle &&
+                                entry.windowTitle.toLowerCase() !==
+                                  appName.toLowerCase() && (
+                                  <>
+                                    <span className="text-xs text-muted-foreground">·</span>
+                                    <span className="text-xs text-muted-foreground truncate max-w-[240px]">
+                                      {entry.windowTitle}
+                                    </span>
+                                  </>
+                                )}
+                              <span className="text-xs text-muted-foreground">·</span>
+                              <CardDescription className="text-xs">
+                                {formatTimestamp(entry.copiedAt)}
+                              </CardDescription>
+                            </>
+                          ) : entry.entryType === "image" ? (
                             <>
                               {appName.toLowerCase().includes("screen capture") ||
                               appName.toLowerCase().includes("screenshot") ? (
@@ -682,7 +767,13 @@ export default function App() {
                       </CardHeader>
 
                       <CardContent className="p-4 pt-1">
-                        {entry.entryType === "image" && entry.imageData ? (
+                        {entry.entryType === "file" ? (
+                          <FileEntryCard
+                            entry={entry}
+                            onCopyPaths={(e) => handleCopyPaths(entry, e)}
+                            isCopiedPaths={copiedPathId === entry.id}
+                          />
+                        ) : entry.entryType === "image" && entry.imageData ? (
                           <div>
                             <div
                               className="relative group overflow-hidden rounded-md border bg-muted/20 max-h-[300px] flex items-center justify-center p-1.5 cursor-zoom-in transition-all hover:border-primary/40 hover:bg-muted/30"
