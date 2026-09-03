@@ -13,11 +13,13 @@ import {
   ZoomIn,
   ZoomOut,
   X,
+  Pencil,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { Button } from "@/components/ui/button";
 import type { ClipboardEntry } from "../App";
+import { ImageAnnotator } from "./image-editor/image-annotator";
 
 interface ImageLightboxProps {
   entry: ClipboardEntry | null;
@@ -32,14 +34,16 @@ export function ImageLightbox({
   onClose,
   formatTimestamp,
 }: ImageLightboxProps) {
+  const [isEditing, setIsEditing] = React.useState(false);
   const [isZoomed, setIsZoomed] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [saveMessage, setSaveMessage] = React.useState<string | null>(null);
 
-  // Reset zoom state when modal opens with a new entry
+  // Reset zoom and edit state when modal opens with a new entry
   React.useEffect(() => {
     if (isOpen) {
+      setIsEditing(false);
       setIsZoomed(false);
       setCopied(false);
       setSaveMessage(null);
@@ -63,6 +67,28 @@ export function ImageLightbox({
 
   if (!isOpen || !entry || !entry.imageData) {
     return null;
+  }
+
+  if (isEditing) {
+    return (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Image Editor"
+        className="fixed inset-0 z-50 flex flex-col bg-background animate-in fade-in-0 duration-200"
+      >
+        <ImageAnnotator
+          initialDataUrl={entry.imageData}
+          sourceEntryId={entry.id}
+          initialDimensions={entry.imageDimensions}
+          onClose={() => setIsEditing(false)}
+          onSavedNewClip={() => {
+            setIsEditing(false);
+            onClose();
+          }}
+        />
+      </div>
+    );
   }
 
   const appName = entry.sourceApp || entry.sourceProcess || "Unknown Application";
@@ -209,6 +235,17 @@ export function ImageLightbox({
                 <span>100%</span>
               </>
             )}
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setIsEditing(true)}
+            title="Annotate & Crop Image"
+            className="h-8 gap-1.5 text-xs font-medium border-primary/40 text-primary hover:bg-primary/10"
+          >
+            <Pencil className="size-3.5" />
+            <span>Annotate</span>
           </Button>
 
           <Button

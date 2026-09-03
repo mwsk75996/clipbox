@@ -809,6 +809,64 @@ fn save_image_to_file(
 }
 
 // ----------
+// Save Edited Image Entry Command
+// Description: Persists an annotated or cropped image as a new entry in Clipbox SQLite storage, inheriting origin metadata from the source image, and emits clipboard://new-entry to update the feed.
+// ----------
+
+#[tauri::command]
+fn save_edited_image_entry(
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+    data_url: String,
+    dimensions: String,
+    source_entry_id: Option<i64>,
+) -> Result<ClipboardEntry, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|e| format!("could not open database: {e}"))?;
+
+    let metadata = if let Some(source_id) = source_entry_id {
+        if let Ok(Some(source)) = store.get_entry(source_id) {
+            clipbox_core::ClipboardMetadata {
+                source_app: source.source_app.or(Some("Clipbox Editor".into())),
+                source_process: source.source_process,
+                window_title: Some("Annotated Image".into()),
+                app_icon: source.app_icon,
+                source_url: source.source_url,
+            }
+        } else {
+            clipbox_core::ClipboardMetadata {
+                source_app: Some("Clipbox Editor".into()),
+                source_process: None,
+                window_title: Some("Annotated Image".into()),
+                app_icon: None,
+                source_url: None,
+            }
+        }
+    } else {
+        clipbox_core::ClipboardMetadata {
+            source_app: Some("Clipbox Editor".into()),
+            source_process: None,
+            window_title: Some("Annotated Image".into()),
+            app_icon: None,
+            source_url: None,
+        }
+    };
+
+    let id = store
+        .add_image_entry(&data_url, &dimensions, &metadata)
+        .map_err(|e| format!("could not save image entry: {e}"))?;
+
+    let entry = store
+        .get_entry(id)
+        .map_err(|e| format!("could not get saved entry: {e}"))?
+        .ok_or_else(|| "entry not found after insert".to_string())?;
+
+    let tauri_entry = ClipboardEntry::from(entry);
+    let _ = app.emit("clipboard://new-entry", tauri_entry.clone());
+    Ok(tauri_entry)
+}
+
+// ----------
 // Application Restart Command
 // Description: Restarts the Clipbox application process cleanly via Tauri AppHandle.
 // ----------
@@ -960,6 +1018,7 @@ pub fn run() {
             set_retention_limit,
             restart_app,
             save_image_to_file,
+            save_edited_image_entry,
             copy_files_to_clipboard,
             open_in_explorer,
             open_url,
