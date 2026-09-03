@@ -4,6 +4,7 @@
 // ----------
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 import {
   Camera,
   Image as ImageIcon,
@@ -281,19 +282,19 @@ export function ImageLightbox({
         onClick={(e) => e.stopPropagation()}
       >
         {/* Left: Metadata Badges */}
-        <div className="flex items-center gap-2 flex-wrap overflow-hidden">
+        <div className="flex min-w-0 flex-1 items-center gap-2 flex-nowrap overflow-hidden">
           {isScreenCapture ? (
-            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-semibold bg-blue-500/15 text-blue-400 border border-blue-500/30 select-none">
+            <span className="inline-flex shrink-0 items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-semibold bg-blue-500/15 text-blue-400 border border-blue-500/30 select-none">
               <Camera className="size-3.5 text-blue-400" />
               Screen Capture
             </span>
           ) : (
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-semibold bg-blue-500/15 text-blue-400 border border-blue-500/30 select-none">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <span className="inline-flex shrink-0 items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-semibold bg-blue-500/15 text-blue-400 border border-blue-500/30 select-none">
                 <ImageIcon className="size-3.5 text-blue-400" />
                 Image
               </span>
-              <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+              <div className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-foreground">
                 {entry.appIcon ? (
                   <img
                     src={entry.appIcon}
@@ -307,35 +308,29 @@ export function ImageLightbox({
                     {appName.charAt(0)}
                   </span>
                 )}
-                <span>{appName}</span>
+                <span className="truncate">{appName}</span>
               </div>
-              <span className="text-xs text-muted-foreground">·</span>
-              <span className="text-xs text-muted-foreground">
+              <span className="text-xs text-muted-foreground shrink-0">·</span>
+              <span className="text-xs text-muted-foreground truncate">
                 {entry.windowTitle || "Copied Image"}
               </span>
             </div>
           )}
 
           {entry.imageDimensions && (
-            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono font-medium bg-muted text-muted-foreground border select-none">
+            <span className="inline-flex shrink-0 items-center px-1.5 py-0.5 rounded text-[11px] font-mono font-medium bg-muted text-muted-foreground border select-none">
               {entry.imageDimensions}
             </span>
           )}
 
-          <span className="text-xs text-muted-foreground">·</span>
-          <span className="text-xs text-muted-foreground">
+          <span className="text-xs text-muted-foreground shrink-0">·</span>
+          <span className="text-xs text-muted-foreground shrink-0 whitespace-nowrap">
             {formatTimestamp(entry.copiedAt)}
           </span>
         </div>
 
         {/* Right: Actions */}
         <div className="flex items-center gap-2 shrink-0">
-          {saveMessage && (
-            <span className="text-xs font-medium text-emerald-400 animate-in fade-in-0 slide-in-from-right-2 duration-150 mr-2">
-              {saveMessage}
-            </span>
-          )}
-
           {/* Interactive Zoom Controls */}
           <div className="flex items-center bg-muted/60 border rounded-lg p-0.5">
             <Button
@@ -509,6 +504,19 @@ export function ImageLightbox({
           <span>Press <kbd className="px-1 py-0.5 bg-muted rounded border text-[10px] font-mono">Esc</kbd> or click background to close</span>
         </div>
       </div>
+
+      {/* Floating Save Confirmation Toast (portaled to body so no
+          overlay stacking context can trap it) */}
+      {saveMessage &&
+        createPortal(
+          <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-[100] pointer-events-none animate-in fade-in-0 slide-in-from-bottom-2 duration-200">
+            <div className="bg-popover/95 backdrop-blur-md text-popover-foreground border shadow-xl rounded-full px-4 py-2 flex items-center gap-2 text-xs font-medium whitespace-nowrap">
+              <Check className="size-4 text-emerald-400 shrink-0" />
+              <span>{saveMessage}</span>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
