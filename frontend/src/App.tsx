@@ -571,8 +571,10 @@ export default function App() {
       if (matchesBinding(event, shortcuts.expand_preview) && focusedIndex !== null && filteredEntries[focusedIndex]) {
         event.preventDefault();
         const targetEntry = filteredEntries[focusedIndex];
-        const lines = stripLeadingEmptyLines(targetEntry.content).split(/\r?\n/);
-        if (lines.length > 1) {
+        const content = stripLeadingEmptyLines(targetEntry.content);
+        const lines = content.split(/\r?\n/);
+        const isExpandable = lines.length > 1 || content.length > 90;
+        if (isExpandable) {
           setExpandedId((prev) => (prev === targetEntry.id ? null : targetEntry.id));
         }
         return;
@@ -651,10 +653,10 @@ export default function App() {
   // Handle card expansion while preventing collapse when selecting/marking text
   const handleCardClick = (
     id: number,
-    isMultiLine: boolean,
+    isExpandable: boolean,
     e: React.MouseEvent
   ) => {
-    if (!isMultiLine) return;
+    if (!isExpandable) return;
 
     // Ignore clicks on buttons
     if ((e.target as HTMLElement).closest("button")) return;
@@ -839,7 +841,7 @@ export default function App() {
                 {filteredEntries.map((entry, index) => {
                   const content = stripLeadingEmptyLines(entry.content);
                   const lines = content.split(/\r?\n/);
-                  const isMultiLine = lines.length > 1;
+                  const isExpandable = lines.length > 1 || content.length > 90;
                   const isExpanded = expandedId === entry.id;
                   const isFocused = focusedIndex === index;
                   const appName = sourceLabel(entry);
@@ -850,7 +852,7 @@ export default function App() {
                       data-card-index={index}
                       onClick={(e) => {
                         setFocusedIndex(null);
-                        handleCardClick(entry.id, isMultiLine, e);
+                        handleCardClick(entry.id, isExpandable, e);
                       }}
                       className={`transition-all border hover:border-primary/40 cursor-pointer shadow-sm ${
                         isFocused
@@ -1106,14 +1108,14 @@ export default function App() {
                                   e.stopPropagation();
                                 }
                               }}
-                              className={`text-sm font-dmsans font-normal tracking-normal leading-relaxed whitespace-pre-wrap break-all select-text cursor-text ${
-                                !isExpanded && isMultiLine ? "line-clamp-1" : ""
+                              className={`text-sm font-dmsans font-normal tracking-normal leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] select-text cursor-text ${
+                                !isExpanded && isExpandable ? "line-clamp-1" : ""
                               }`}
                             >
-                              {isExpanded ? content : lines[0]}
+                              {isExpanded ? content : (lines.length > 1 ? lines[0] : content)}
                             </div>
 
-                            {isMultiLine && (
+                            {isExpandable && (
                               <div
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -1129,7 +1131,11 @@ export default function App() {
                                 ) : (
                                   <>
                                     <ChevronDown className="size-3" />
-                                    <span>+{lines.length - 1} more lines</span>
+                                    <span>
+                                      {lines.length > 1
+                                        ? `+${lines.length - 1} more lines`
+                                        : "Show more"}
+                                    </span>
                                   </>
                                 )}
                               </div>
