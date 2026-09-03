@@ -92,7 +92,7 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
       {/* App Branding (Draggable) */}
       <div
         data-tauri-drag-region
-        className="flex items-center gap-2 px-3 h-full pointer-events-none select-none shrink-0"
+        className="flex items-center gap-2 px-3 h-full select-none shrink-0"
       >
         <img
           src={clipboxLogo}
@@ -101,7 +101,7 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
           height={18}
           className="h-[18px] w-[18px] max-h-[18px] max-w-[18px] rounded object-contain select-none pointer-events-none shrink-0"
         />
-        <span className="text-xs font-semibold tracking-wide text-foreground/85">
+        <span className="text-xs font-semibold tracking-wide text-foreground/85 pointer-events-none">
           Clipbox
         </span>
       </div>
@@ -109,10 +109,10 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
       {/* Middle Drag Region with Centered Entries Count Badge */}
       <div
         data-tauri-drag-region
-        className="flex-1 h-full flex items-center justify-center cursor-default pointer-events-none select-none"
+        className="flex-1 h-full flex items-center justify-center cursor-default select-none"
       >
         {typeof entriesCount === "number" && (
-          <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-secondary/70 border border-border/80 text-[11px] font-medium text-muted-foreground shadow-sm">
+          <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-secondary/70 border border-border/80 text-[11px] font-medium text-muted-foreground shadow-sm pointer-events-none">
             <ClipboardList className="size-3 text-muted-foreground" />
             <span>
               {entriesCount} {entriesCount === 1 ? "entry" : "entries"}

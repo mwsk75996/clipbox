@@ -149,6 +149,27 @@ fn exit_app(app: tauri::AppHandle) {
 
 #[tauri::command]
 fn start_dragging(window: tauri::Window) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+        use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN};
+
+        if let Ok(raw_hwnd) = window.hwnd() {
+            unsafe {
+                let _ = ReleaseCapture();
+                let hwnd = HWND(raw_hwnd.0 as _);
+                SendMessageW(
+                    hwnd,
+                    WM_NCLBUTTONDOWN,
+                    Some(WPARAM(HTCAPTION as usize)),
+                    Some(LPARAM(0)),
+                );
+                return Ok(());
+            }
+        }
+    }
+
     window.start_dragging().map_err(|error| error.to_string())
 }
 
