@@ -29,6 +29,7 @@ import type { DateRange } from "react-day-picker";
 import { Titlebar } from "@/components/titlebar";
 import { ImageLightbox } from "@/components/image-lightbox";
 import { FileEntryCard } from "@/components/file-entry-card";
+import { DeletedEntryCard } from "@/components/deleted-entry-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -76,6 +77,23 @@ export interface ClipboardEntry {
   sourceUrl?: string | null;
 }
 
+export interface DeletedClipboardEntry {
+  id: number;
+  content: string;
+  copiedAt: number;
+  sourceApp?: string | null;
+  sourceProcess?: string | null;
+  windowTitle?: string | null;
+  appIcon?: string | null;
+  isPinned?: boolean;
+  entryType?: string;
+  imageData?: string | null;
+  imageDimensions?: string | null;
+  filesData?: string | null;
+  sourceUrl?: string | null;
+  deletedAt: number;
+}
+
 // Minimum time between full feed reloads triggered by window focus.
 // Real-time clipboard events keep the visible feed updated, so a focus that
 // closely follows any fetch skips the reload instead of rerendering everything.
@@ -110,7 +128,7 @@ const PREVIEW_ENTRIES: ClipboardEntry[] = [
   },
 ];
 
-function formatTimestamp(timestamp: number): string {
+export function formatTimestamp(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleString(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
@@ -137,7 +155,7 @@ function isWebUrl(text?: string | null): boolean {
   );
 }
 
-function sourceLabel(entry: ClipboardEntry): string {
+export function sourceLabel(entry: ClipboardEntry): string {
   return (
     entry.sourceApp ||
     entry.sourceProcess ||
@@ -150,7 +168,7 @@ function sourceLabel(entry: ClipboardEntry): string {
 // Leading Empty Line Sanitizer
 // Description: Trims leading empty lines so copied text and display blocks start cleanly with content.
 // ----------
-function stripLeadingEmptyLines(text: string): string {
+export function stripLeadingEmptyLines(text: string): string {
   const lines = text.split(/\r?\n/);
   while (lines.length > 1 && lines[0].trim() === "") {
     lines.shift();
@@ -170,6 +188,8 @@ export default function App() {
   const [focusedIndex, setFocusedIndex] = React.useState<number | null>(null);
   const [isFilterOpen, setIsFilterOpen] = React.useState(false);
   const [previewEntry, setPreviewEntry] = React.useState<ClipboardEntry | null>(null);
+  const [showDeleted, setShowDeleted] = React.useState(false);
+  const [deletedEntries, setDeletedEntries] = React.useState<DeletedClipboardEntry[]>([]);
 
   // Keyboard shortcuts and privacy monitoring state
   const [shortcuts, setShortcuts] = React.useState<ShortcutSettings>(DEFAULT_SHORTCUTS);
@@ -466,12 +486,56 @@ export default function App() {
     }
   };
 
+  const fetchDeletedEntries = React.useCallback(async () => {
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        setDeletedEntries(await invoke<DeletedClipboardEntry[]>("list_deleted_entries"));
+      } else {
+        setDeletedEntries([]);
+      }
+    } catch (err) {
+      console.error("Failed to fetch deleted entries:", err);
+    }
+  }, []);
+
+  const handleRestoreDeleted = async (id: number) => {
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("restore_deleted_entry", { id });
+      }
+      fetchEntries();
+      fetchDeletedEntries();
+    } catch (err) {
+      console.error("Failed to restore entry", err);
+    }
+  };
+
+  const handleDeleteForever = async (id: number, event?: React.MouseEvent) => {
+    event?.stopPropagation();
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("delete_deleted_entry", { id });
+      }
+      setDeletedEntries((prev) => prev.filter((entry) => entry.id !== id));
+    } catch (err) {
+      console.error("Failed to permanently delete entry", err);
+      fetchDeletedEntries();
+    }
+  };
+
   const clearFilters = () => {
     setSelectedApp("all");
     setSelectedType("all");
     setSearchQuery("");
     setDateRange(undefined);
     setIsFilterOpen(false);
+  };
+
+  const enterDeletedView = () => {
+    clearFilters();
+    setFocusedIndex(null);
+    setShowDeleted(true);
+    fetchDeletedEntries();
   };
 
   // Reset keyboard focus when search or filters change
@@ -535,6 +599,8 @@ export default function App() {
           setFocusedIndex(null);
         } else if (focusedIndex !== null) {
           setFocusedIndex(null);
+        } else if (showDeleted) {
+          setShowDeleted(false);
         } else if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
           invoke("hide_window").catch(console.error);
         }
@@ -588,8 +654,8 @@ export default function App() {
         return;
       }
 
-      // Configurable Delete focused entry shortcut
-      if (matchesBinding(event, shortcuts.delete_entry) && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      // Configurable Delete focused entry shortcut (active feed only)
+      if (matchesBinding(event, shortcuts.delete_entry) && !showDeleted && focusedIndex !== null && filteredEntries[focusedIndex]) {
         event.preventDefault();
         const targetEntry = filteredEntries[focusedIndex];
         handleDelete(targetEntry.id);
@@ -667,7 +733,7 @@ export default function App() {
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("pointerdown", handlePointerDown);
     };
-  }, [filteredEntries, focusedIndex, previewEntry, searchQuery, hasActiveFilters, shortcuts]);
+  }, [filteredEntries, focusedIndex, previewEntry, searchQuery, hasActiveFilters, shortcuts, showDeleted]);
 
   // Handle card expansion while preventing collapse when selecting/marking text
   const handleCardClick = (
@@ -805,6 +871,23 @@ export default function App() {
               </PopoverContent>
             </Popover>
 
+            <Button
+              variant={showDeleted ? "default" : "outline"}
+              size="sm"
+              onClick={() => {
+                if (showDeleted) {
+                  setShowDeleted(false);
+                } else {
+                  enterDeletedView();
+                }
+              }}
+              className="gap-1.5 shrink-0 h-9"
+              title="View recently deleted clips"
+            >
+              <Trash2 className="size-4" />
+              Trash
+            </Button>
+
             {isMonitoringPaused && (
               <Button
                 variant="outline"
@@ -823,6 +906,7 @@ export default function App() {
               onClearHistory={() => {
                 inFlightDeletionsRef.current.clear();
                 setEntries([]);
+                fetchDeletedEntries();
               }}
               shortcuts={shortcuts}
               onShortcutsChange={setShortcuts}
@@ -834,7 +918,50 @@ export default function App() {
 
         {/* Main Content Area */}
         <main className="flex-1 w-full overflow-hidden flex flex-col min-h-0 relative">
-          {filteredEntries.length === 0 ? (
+          {showDeleted ? (
+            <div className="relative flex-1 w-full min-h-0 flex flex-col overflow-hidden">
+              <ScrollArea className="flex-1 w-full h-full fade-bottom-mask">
+                <div className="max-w-4xl w-full mx-auto px-6 pt-5 pb-20 space-y-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <h3 className="text-sm font-semibold flex items-center gap-1.5">
+                        <Trash2 className="size-4" />
+                        Recently Deleted
+                      </h3>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Restore clips before they are permanently purged.
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowDeleted(false)}
+                      className="gap-1.5 h-8 text-xs shrink-0"
+                    >
+                      <RotateCcw className="size-3.5" />
+                      Back to history
+                    </Button>
+                  </div>
+                  {deletedEntries.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-16 text-center">
+                      <p className="text-sm text-muted-foreground max-w-sm">
+                        Nothing here. Deleted clips stay restorable until the retention timespan passes.
+                      </p>
+                    </div>
+                  ) : (
+                    deletedEntries.map((entry) => (
+                      <DeletedEntryCard
+                        key={entry.id}
+                        entry={entry}
+                        onRestore={handleRestoreDeleted}
+                        onDeleteForever={handleDeleteForever}
+                      />
+                    ))
+                  )}
+                </div>
+              </ScrollArea>
+            </div>
+          ) : filteredEntries.length === 0 ? (
             <div className="max-w-4xl w-full mx-auto px-6 flex flex-col items-center justify-center my-auto py-16 text-center">
               <p className="text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
                 Your Clipboard

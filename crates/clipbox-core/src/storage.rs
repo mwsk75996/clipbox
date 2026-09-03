@@ -36,6 +36,50 @@ pub struct ClipboardEntry {
     pub source_url: Option<String>,
 }
 
+/// An archived clipboard item awaiting restore, permanent deletion, or purge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeletedEntry {
+    pub id: i64,
+    pub original_id: i64,
+    pub content: String,
+    pub copied_at: i64,
+    pub source_app: Option<String>,
+    pub source_process: Option<String>,
+    pub window_title: Option<String>,
+    pub app_icon: Option<String>,
+    pub is_pinned: bool,
+    pub entry_type: String,
+    pub image_data: Option<String>,
+    pub image_dimensions: Option<String>,
+    pub files_data: Option<String>,
+    pub source_url: Option<String>,
+    pub deleted_at: i64,
+}
+
+/// Current unix timestamp in seconds, used for copied_at and deleted_at.
+fn current_unix_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+// ----------
+// Deleted Retention Timespan
+// Description: Maps the deleted_retention setting value to a lifetime in seconds.
+// "immediately" is handled by the caller (records skip the archive entirely);
+// unknown values yield None so nothing is ever purged unexpectedly.
+// ----------
+pub fn deleted_retention_lifetime_seconds(setting: &str) -> Option<u64> {
+    match setting {
+        "1hour" => Some(3_600),
+        "1day" => Some(86_400),
+        "7days" => Some(7 * 86_400),
+        "30days" => Some(30 * 86_400),
+        _ => None,
+    }
+}
+
 /// SQLite-backed storage shared by Clipbox frontends.
 pub struct ClipboardStore {
     connection: Connection,
@@ -67,7 +111,26 @@ impl ClipboardStore {
             CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
-            );",
+            );
+            CREATE TABLE IF NOT EXISTS deleted_entries (
+                id INTEGER PRIMARY KEY,
+                original_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                copied_at INTEGER NOT NULL,
+                source_app TEXT,
+                source_process TEXT,
+                window_title TEXT,
+                app_icon TEXT,
+                is_pinned INTEGER NOT NULL DEFAULT 0,
+                entry_type TEXT NOT NULL DEFAULT 'text',
+                image_data TEXT,
+                image_dimensions TEXT,
+                files_data TEXT,
+                source_url TEXT,
+                deleted_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_deleted_entries_deleted_at
+                ON deleted_entries(deleted_at);",
         )?;
 
         // Keep databases created by earlier versions usable.
@@ -441,11 +504,22 @@ impl ClipboardStore {
 
     // ----------
     // Clear History Storage
-    // Description: Deletes all stored clipboard entries from the SQLite database.
+    // Description: Moves all stored clipboard entries into the Recently Deleted archive (safety net) and returns the number of archived rows.
     // ----------
-    /// Delete all stored clipboard records and return the number of deleted rows.
+    /// Move all stored clipboard records into the archive and return the archived count.
     pub fn clear_entries(&self) -> Result<usize> {
-        self.connection.execute("DELETE FROM clipboard_entries", [])
+        let archived = self.connection.execute(
+            "INSERT INTO deleted_entries
+                (original_id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, deleted_at)
+             SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, ?1
+             FROM clipboard_entries",
+            params![current_unix_timestamp()],
+        )?;
+
+        self.connection
+            .execute("DELETE FROM clipboard_entries", [])?;
+
+        Ok(archived)
     }
 
     // ----------
@@ -478,6 +552,152 @@ impl ClipboardStore {
         }
 
         Ok(deleted > 0)
+    }
+
+    // ----------
+    // Recently Deleted Archive
+    // Description: Soft-delete safety net. Deleted records move to a dedicated archive
+    // table (keeping the active table's ID resequencing intact) until restored,
+    // hard-deleted, or purged past the configured retention timespan.
+    // ----------
+    fn map_deleted_entry(row: &rusqlite::Row) -> rusqlite::Result<DeletedEntry> {
+        let is_pinned_int: i32 = row.get(8)?;
+        Ok(DeletedEntry {
+            id: row.get(0)?,
+            original_id: row.get(1)?,
+            content: row.get(2)?,
+            copied_at: row.get(3)?,
+            source_app: row.get(4)?,
+            source_process: row.get(5)?,
+            window_title: row.get(6)?,
+            app_icon: row.get(7)?,
+            is_pinned: is_pinned_int != 0,
+            entry_type: row.get(9).unwrap_or_else(|_| "text".into()),
+            image_data: row.get(10)?,
+            image_dimensions: row.get(11)?,
+            files_data: row.get(12)?,
+            source_url: row.get(13)?,
+            deleted_at: row.get(14)?,
+        })
+    }
+
+    /// Archive a single active record. The active table keeps its existing ID
+    /// resequencing; the archive row keeps the original id for reference.
+    /// Returns false when no active record has `id`.
+    pub fn soft_delete_entry(&self, id: i64) -> Result<bool> {
+        let entry = match self.get_entry(id)? {
+            Some(entry) => entry,
+            None => return Ok(false),
+        };
+
+        self.connection.execute(
+            "INSERT INTO deleted_entries
+                (original_id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, deleted_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                entry.id,
+                entry.content,
+                entry.copied_at,
+                entry.source_app.as_deref(),
+                entry.source_process.as_deref(),
+                entry.window_title.as_deref(),
+                entry.app_icon.as_deref(),
+                i32::from(entry.is_pinned),
+                entry.entry_type,
+                entry.image_data.as_deref(),
+                entry.image_dimensions.as_deref(),
+                entry.files_data.as_deref(),
+                entry.source_url.as_deref(),
+                current_unix_timestamp(),
+            ],
+        )?;
+
+        // Remove from the active table (reuses the hard-delete resequencing).
+        self.delete_entry(id)
+    }
+
+    /// Return a single archived record by its archive id.
+    fn get_deleted_entry(&self, id: i64) -> Result<Option<DeletedEntry>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, original_id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, deleted_at
+             FROM deleted_entries
+             WHERE id = ?1",
+        )?;
+        let mut rows = statement.query_map(params![id], Self::map_deleted_entry)?;
+
+        if let Some(entry) = rows.next() {
+            Ok(Some(entry?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Return the newest archived records first.
+    pub fn recent_deleted_entries(&self, limit: u32) -> Result<Vec<DeletedEntry>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, original_id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, deleted_at
+             FROM deleted_entries
+             ORDER BY deleted_at DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let entries = statement.query_map(params![i64::from(limit)], Self::map_deleted_entry)?;
+
+        entries.collect()
+    }
+
+    /// Restore an archived record into the active feed with its original
+    /// content and timestamp. Returns the new active id, or None when the
+    /// archive id is missing.
+    pub fn restore_deleted_entry(&self, id: i64) -> Result<Option<i64>> {
+        let archived = match self.get_deleted_entry(id)? {
+            Some(archived) => archived,
+            None => return Ok(None),
+        };
+
+        self.connection.execute(
+            "INSERT INTO clipboard_entries
+                (content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                archived.content,
+                archived.copied_at,
+                archived.source_app.as_deref(),
+                archived.source_process.as_deref(),
+                archived.window_title.as_deref(),
+                archived.app_icon.as_deref(),
+                i32::from(archived.is_pinned),
+                archived.entry_type,
+                archived.image_data.as_deref(),
+                archived.image_dimensions.as_deref(),
+                archived.files_data.as_deref(),
+                archived.source_url.as_deref(),
+            ],
+        )?;
+        let new_id = self.connection.last_insert_rowid();
+
+        self.connection
+            .execute("DELETE FROM deleted_entries WHERE id = ?1", params![id])?;
+
+        Ok(Some(new_id))
+    }
+
+    /// Permanently delete a single archived record. Returns false when missing.
+    pub fn hard_delete_entry(&self, id: i64) -> Result<bool> {
+        let deleted = self
+            .connection
+            .execute("DELETE FROM deleted_entries WHERE id = ?1", params![id])?;
+
+        Ok(deleted > 0)
+    }
+
+    /// Permanently delete archived records deleted before `cutoff_unix`.
+    pub fn purge_deleted_entries_older_than(&self, cutoff_unix: i64) -> Result<usize> {
+        let purged = self.connection.execute(
+            "DELETE FROM deleted_entries WHERE deleted_at < ?1",
+            params![cutoff_unix],
+        )?;
+
+        Ok(purged)
     }
 
     // ----------
@@ -893,5 +1113,199 @@ mod tests {
         let id2 = store.add_entry("Plain text", &plain_meta).unwrap();
         let entry2 = store.get_entry(id2).unwrap().unwrap();
         assert_eq!(entry2.source_url, None);
+    }
+
+    #[test]
+    fn soft_delete_moves_record_to_archive_and_resequences_active() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        store
+            .add_text("first")
+            .expect("first text should be stored");
+        store
+            .add_text("second")
+            .expect("second text should be stored");
+        store
+            .add_text("third")
+            .expect("third text should be stored");
+
+        assert!(store
+            .soft_delete_entry(2)
+            .expect("soft delete should succeed"));
+
+        let entries = store
+            .recent_entries(10)
+            .expect("recent entries should be queryable");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].content, "third");
+        assert_eq!(entries[0].id, 2);
+        assert_eq!(entries[1].content, "first");
+        assert_eq!(entries[1].id, 1);
+
+        let deleted = store
+            .recent_deleted_entries(10)
+            .expect("deleted entries should be queryable");
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].content, "second");
+        assert_eq!(deleted[0].original_id, 2);
+    }
+
+    #[test]
+    fn soft_delete_missing_id_returns_false() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        assert!(!store
+            .soft_delete_entry(99)
+            .expect("missing id should return false"));
+        assert!(store
+            .recent_deleted_entries(10)
+            .expect("deleted entries should be queryable")
+            .is_empty());
+    }
+
+    #[test]
+    fn restore_reinserts_with_original_content_and_timestamp() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        let first_id = store
+            .add_text("first")
+            .expect("first text should be stored");
+        let first = store
+            .get_entry(first_id)
+            .expect("entry should be queryable")
+            .expect("entry should exist");
+        store
+            .add_text("second")
+            .expect("second text should be stored");
+
+        assert!(store
+            .soft_delete_entry(first_id)
+            .expect("soft delete should succeed"));
+        let archived = store.recent_deleted_entries(10).unwrap();
+        assert_eq!(archived.len(), 1);
+
+        let new_id = store
+            .restore_deleted_entry(archived[0].id)
+            .expect("restore should succeed")
+            .expect("restored id should be returned");
+        let restored = store
+            .get_entry(new_id)
+            .expect("entry should be queryable")
+            .expect("restored entry should exist");
+        assert_eq!(restored.content, "first");
+        assert_eq!(restored.copied_at, first.copied_at);
+        assert!(store
+            .recent_deleted_entries(10)
+            .expect("deleted entries should be queryable")
+            .is_empty());
+    }
+
+    #[test]
+    fn restore_missing_id_returns_none() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        assert_eq!(
+            store
+                .restore_deleted_entry(99)
+                .expect("missing id should return none"),
+            None
+        );
+    }
+
+    #[test]
+    fn hard_delete_removes_only_the_archived_record() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        store
+            .add_text("first")
+            .expect("first text should be stored");
+        store
+            .add_text("second")
+            .expect("second text should be stored");
+        assert!(store
+            .soft_delete_entry(1)
+            .expect("soft delete should succeed"));
+        assert!(store
+            .soft_delete_entry(1)
+            .expect("soft delete should succeed"));
+
+        let deleted = store.recent_deleted_entries(10).unwrap();
+        assert_eq!(deleted.len(), 2);
+
+        assert!(store
+            .hard_delete_entry(deleted[0].id)
+            .expect("hard delete should succeed"));
+        let remaining = store.recent_deleted_entries(10).unwrap();
+        assert_eq!(remaining.len(), 1);
+
+        // Active feed is untouched by archive hard-deletes.
+        assert_eq!(store.recent_entries(10).unwrap().len(), 0);
+        assert!(!store
+            .hard_delete_entry(999)
+            .expect("missing id should return false"));
+    }
+
+    #[test]
+    fn purge_removes_only_expired_archive_records() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        store
+            .connection
+            .execute(
+                "INSERT INTO deleted_entries
+                    (original_id, content, copied_at, deleted_at)
+                 VALUES (1, 'old', 1000, 1000), (2, 'fresh', 2000, 9000)",
+                [],
+            )
+            .expect("archive rows should be insertable");
+
+        let purged = store
+            .purge_deleted_entries_older_than(5000)
+            .expect("purge should succeed");
+        assert_eq!(purged, 1);
+
+        let remaining = store.recent_deleted_entries(10).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].content, "fresh");
+    }
+
+    #[test]
+    fn clear_archives_instead_of_destroying() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        store
+            .add_text("first")
+            .expect("first text should be stored");
+        store
+            .add_text("second")
+            .expect("second text should be stored");
+
+        let archived = store.clear_entries().expect("clear should succeed");
+        assert_eq!(archived, 2);
+        assert!(store
+            .recent_entries(10)
+            .expect("recent entries should be queryable")
+            .is_empty());
+
+        let deleted = store.recent_deleted_entries(10).unwrap();
+        assert_eq!(deleted.len(), 2);
+    }
+
+    #[test]
+    fn maps_deleted_retention_setting_to_lifetimes() {
+        assert_eq!(
+            super::deleted_retention_lifetime_seconds("1hour"),
+            Some(3_600)
+        );
+        assert_eq!(
+            super::deleted_retention_lifetime_seconds("1day"),
+            Some(86_400)
+        );
+        assert_eq!(
+            super::deleted_retention_lifetime_seconds("7days"),
+            Some(7 * 86_400)
+        );
+        assert_eq!(
+            super::deleted_retention_lifetime_seconds("30days"),
+            Some(30 * 86_400)
+        );
+        assert_eq!(
+            super::deleted_retention_lifetime_seconds("immediately"),
+            None
+        );
+        assert_eq!(super::deleted_retention_lifetime_seconds("bogus"), None);
     }
 }

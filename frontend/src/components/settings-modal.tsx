@@ -185,6 +185,10 @@ export function SettingsModal({
   const [dbPath, setDbPath] = React.useState("%APPDATA%\\com.palethea.clipbox\\clipbox.sqlite3");
   const [copiedPath, setCopiedPath] = React.useState(false);
   const [prunedNotice, setPrunedNotice] = React.useState<number | null>(null);
+  const [deletedRetention, setDeletedRetention] = React.useState(() => {
+    return localStorage.getItem("clipbox:deletedRetention") || "7days";
+  });
+  const [purgedNotice, setPurgedNotice] = React.useState<number | null>(null);
 
   const [confirmClear, setConfirmClear] = React.useState(false);
   const [clearing, setClearing] = React.useState(false);
@@ -227,6 +231,10 @@ export function SettingsModal({
           const realRetention = await invoke<string>("get_retention_limit");
           setRetentionLimit(realRetention);
           localStorage.setItem("clipbox:retentionLimit", realRetention);
+
+          const realDeletedRetention = await invoke<string>("get_deleted_retention");
+          setDeletedRetention(realDeletedRetention);
+          localStorage.setItem("clipbox:deletedRetention", realDeletedRetention);
 
           const privacy = await invoke<PrivacySettings>("get_privacy_settings");
           setMonitoringPaused(privacy.monitoring_paused);
@@ -409,6 +417,23 @@ export function SettingsModal({
       }
     } catch (err) {
       console.error("Failed to update retention limit", err);
+    }
+  };
+
+  const handleDeletedRetentionChange = async (value: string) => {
+    setDeletedRetention(value);
+    localStorage.setItem("clipbox:deletedRetention", value);
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        const purged = await invoke<number>("set_deleted_retention", { retention: value });
+        if (purged > 0) {
+          setPurgedNotice(purged);
+          setTimeout(() => setPurgedNotice(null), 3500);
+          onClearHistory?.();
+        }
+      }
+    } catch (err) {
+      console.error("Failed to update deleted retention", err);
     }
   };
 
@@ -792,6 +817,38 @@ export function SettingsModal({
               </div>
             )}
 
+            {/* Deleted Retention */}
+            <div className="flex items-center justify-between gap-4">
+              <div className="space-y-0.5">
+                <label className="text-sm font-medium">Recently Deleted Retention</label>
+                <p className="text-xs text-muted-foreground">
+                  How long deleted clips stay restorable before permanent purge.
+                </p>
+              </div>
+              <Select
+                value={deletedRetention}
+                onValueChange={handleDeletedRetentionChange}
+              >
+                <SelectTrigger className="w-[130px] h-8 text-xs shrink-0">
+                  <SelectValue placeholder="Select timespan" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="immediately">Immediately</SelectItem>
+                  <SelectItem value="1hour">1 Hour</SelectItem>
+                  <SelectItem value="1day">1 Day</SelectItem>
+                  <SelectItem value="7days">7 Days</SelectItem>
+                  <SelectItem value="30days">30 Days</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {purgedNotice !== null && (
+              <div className="text-xs text-primary bg-primary/10 border border-primary/20 rounded p-2 flex items-center gap-1.5">
+                <Check className="size-3.5" />
+                Purged {purgedNotice} expired archived record{purgedNotice > 1 ? "s" : ""} to match the new timespan.
+              </div>
+            )}
+
             {/* Database Path */}
             <div className="space-y-2">
               <label className="text-sm font-medium">Database Location</label>
@@ -842,7 +899,7 @@ export function SettingsModal({
                 Clear Clipboard Data
               </span>
               <p className="text-xs text-muted-foreground">
-                Permanently purge all stored history records from the local database.
+                Move all history records to Recently Deleted, where they can be restored before permanent purge.
               </p>
             </div>
 
