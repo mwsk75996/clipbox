@@ -78,12 +78,18 @@ mod windows_source {
             icon
         });
 
+        let source_url = if crate::browser_url::is_browser_process(source_process.as_deref()) {
+            crate::browser_url::get_browser_url_from_window(window)
+        } else {
+            None
+        };
+
         ClipboardMetadata {
             source_app,
             source_process,
             window_title: window_title(window),
             app_icon,
-            source_url: None,
+            source_url,
         }
     }
 

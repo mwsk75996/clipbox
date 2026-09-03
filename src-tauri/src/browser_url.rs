@@ -63,6 +63,76 @@ pub fn read_clipboard_source_url() -> Option<String> {
     None
 }
 
+pub fn is_browser_process(process_name: Option<&str>) -> bool {
+    let Some(proc) = process_name else { return false; };
+    let lower = proc.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "brave.exe"
+            | "chrome.exe"
+            | "msedge.exe"
+            | "firefox.exe"
+            | "opera.exe"
+            | "vivaldi.exe"
+            | "arc.exe"
+            | "zen.exe"
+            | "waterfox.exe"
+    )
+}
+
+#[cfg(windows)]
+pub fn get_browser_url_from_window(hwnd: windows::Win32::Foundation::HWND) -> Option<String> {
+    use windows::core::Interface;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    };
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, IUIAutomationValuePattern, TreeScope_Descendants,
+        UIA_ControlTypePropertyId, UIA_EditControlTypeId, UIA_ValuePatternId,
+    };
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let uia: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
+        let element = uia.ElementFromHandle(hwnd).ok()?;
+
+        let var = windows::Win32::System::Variant::VARIANT::from(UIA_EditControlTypeId.0);
+        let condition = uia.CreatePropertyCondition(
+            UIA_ControlTypePropertyId,
+            &var,
+        ).ok()?;
+
+        let edit_elements = element.FindAll(TreeScope_Descendants, &condition).ok()?;
+        let count = edit_elements.Length().ok()?.min(10);
+
+        for i in 0..count {
+            let Ok(edit_element) = edit_elements.GetElement(i) else { continue; };
+            let Ok(pattern_obj) = edit_element.GetCurrentPattern(UIA_ValuePatternId) else { continue; };
+            let Ok(value_pattern) = pattern_obj.cast::<IUIAutomationValuePattern>() else { continue; };
+            let Ok(bstr) = value_pattern.CurrentValue() else { continue; };
+            let text = bstr.to_string();
+            let trimmed = text.trim();
+
+            if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+                if !trimmed.contains(' ') && !trimmed.contains('\n') && trimmed.len() > 8 {
+                    return Some(trimmed.to_string());
+                }
+            } else if trimmed.contains('.')
+                && !trimmed.contains(' ')
+                && !trimmed.contains('\n')
+                && !trimmed.starts_with('/')
+                && trimmed.len() > 4
+            {
+                let domain = trimmed.split('/').next().unwrap_or(trimmed);
+                if domain.contains('.') && !domain.ends_with('.') && !domain.starts_with('.') {
+                    return Some(format!("https://{trimmed}"));
+                }
+            }
+        }
+    }
+    None
+}
+
 #[cfg(not(windows))]
 pub fn read_clipboard_source_url() -> Option<String> {
     None

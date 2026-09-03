@@ -480,9 +480,14 @@ fn check_clipboard(
                         metadata.source_process = None;
                         metadata.window_title = None;
                         metadata.app_icon = None;
+                        metadata.source_url = None;
                     } else {
-                        metadata.window_title = Some("Copied Image".into());
-                        metadata.source_url = crate::browser_url::read_clipboard_source_url();
+                        if metadata.window_title.is_none() {
+                            metadata.window_title = Some("Copied Image".into());
+                        }
+                        if metadata.source_url.is_none() {
+                            metadata.source_url = crate::browser_url::read_clipboard_source_url();
+                        }
                     }
 
                     if duplicate_mode == "bump" {
@@ -559,7 +564,18 @@ fn check_clipboard(
 
             if !is_internal_copy && !cleaned.is_empty() {
                 let mut metadata = source::current();
-                metadata.source_url = crate::browser_url::read_clipboard_source_url();
+                if let Some(clip_url) = crate::browser_url::read_clipboard_source_url() {
+                    metadata.source_url = Some(clip_url);
+                } else if metadata.source_url.is_none() {
+                    let trimmed = cleaned.trim();
+                    if (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
+                        && !trimmed.contains('\n')
+                        && !trimmed.contains(' ')
+                        && trimmed.len() > 8
+                    {
+                        metadata.source_url = Some(trimmed.to_string());
+                    }
+                }
                 if !is_excluded_process(metadata.source_process.as_deref()) {
                     if duplicate_mode == "bump" {
                         if let Ok(Some(existing_id)) = store.find_existing_text(cleaned) {

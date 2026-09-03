@@ -121,6 +121,17 @@ function formatSourceUrl(url: string): string {
   }
 }
 
+function isWebUrl(text?: string | null): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+  return (
+    (trimmed.startsWith("http://") || trimmed.startsWith("https://")) &&
+    !trimmed.includes("\n") &&
+    !trimmed.includes(" ") &&
+    trimmed.length > 8
+  );
+}
+
 function sourceLabel(entry: ClipboardEntry): string {
   return (
     entry.sourceApp ||
@@ -294,6 +305,9 @@ export default function App() {
       : null;
 
     return entries.filter((entry) => {
+      const effectiveUrl =
+        entry.sourceUrl || (isWebUrl(entry.content) ? entry.content.trim() : null);
+
       const matchesSearch =
         !query ||
         [
@@ -302,6 +316,7 @@ export default function App() {
           entry.sourceProcess,
           entry.windowTitle,
           entry.sourceUrl,
+          effectiveUrl,
         ].some((val) => val?.toLowerCase().includes(query));
 
       const matchesApp =
@@ -967,23 +982,29 @@ export default function App() {
                               </CardDescription>
                             </>
                           )}
-                          {entry.sourceUrl && (
-                            <>
-                              <span className="text-xs text-muted-foreground">·</span>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleOpenUrl(entry.sourceUrl!);
-                                }}
-                                title={`Open original URL: ${entry.sourceUrl}`}
-                                className="inline-flex items-center gap-1 text-xs text-primary/80 hover:text-primary hover:underline max-w-[200px] truncate transition-colors cursor-pointer group"
-                              >
-                                <ExternalLink className="size-3 shrink-0 opacity-70 group-hover:opacity-100" />
-                                <span className="truncate">{formatSourceUrl(entry.sourceUrl)}</span>
-                              </button>
-                            </>
-                          )}
+                          {(() => {
+                            const effectiveUrl =
+                              entry.sourceUrl ||
+                              (isWebUrl(entry.content) ? entry.content.trim() : null);
+                            if (!effectiveUrl) return null;
+                            return (
+                              <>
+                                <span className="text-xs text-muted-foreground">·</span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenUrl(effectiveUrl);
+                                  }}
+                                  title={`Open original URL: ${effectiveUrl}`}
+                                  className="inline-flex items-center gap-1 text-xs text-primary/80 hover:text-primary hover:underline max-w-[200px] truncate transition-colors cursor-pointer group"
+                                >
+                                  <ExternalLink className="size-3 shrink-0 opacity-70 group-hover:opacity-100" />
+                                  <span className="truncate">{formatSourceUrl(effectiveUrl)}</span>
+                                </button>
+                              </>
+                            );
+                          })()}
                         </div>
 
                         <div className="flex items-center gap-1 shrink-0">
