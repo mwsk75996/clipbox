@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Clipbox - Dev Server Connection</title>
+    <title>Clipbox</title>
     <style>
       :root {
         --bg: #09090b;
@@ -16,6 +16,8 @@
         --accent: #f59e0b;
         --accent-bg: rgba(245, 158, 11, 0.12);
         --accent-border: rgba(245, 158, 11, 0.25);
+        --brand-start: #3b82f6;
+        --brand-end: #6366f1;
       }
 
       * {
@@ -64,7 +66,7 @@
         width: 18px;
         height: 18px;
         border-radius: 4px;
-        background: linear-gradient(135deg, #3b82f6, #6366f1);
+        background: linear-gradient(135deg, var(--brand-start), var(--brand-end));
         display: flex;
         align-items: center;
         justify-content: center;
@@ -102,13 +104,148 @@
         color: white;
       }
 
-      /* Centered Error Container */
+      /* Main Viewport Container */
       .content {
         flex: 1;
         display: flex;
         align-items: center;
         justify-content: center;
         padding: 24px;
+        position: relative;
+      }
+
+      /* 1. Launch Loading State */
+      #loading-view {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        gap: 20px;
+        animation: fadeIn 0.3s ease-out;
+      }
+
+      .logo-container {
+        position: relative;
+        width: 68px;
+        height: 68px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .logo-glow {
+        position: absolute;
+        inset: -6px;
+        border-radius: 20px;
+        background: linear-gradient(135deg, var(--brand-start), var(--brand-end));
+        opacity: 0.35;
+        filter: blur(14px);
+        animation: pulseGlow 2.4s ease-in-out infinite;
+      }
+
+      .logo-badge {
+        position: relative;
+        width: 64px;
+        height: 64px;
+        border-radius: 16px;
+        background: linear-gradient(135deg, var(--brand-start), var(--brand-end));
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 30px;
+        font-weight: 800;
+        color: white;
+        box-shadow: 0 10px 25px -5px rgba(59, 130, 246, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.15) inset;
+      }
+
+      .loading-meta {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .loading-title {
+        font-size: 19px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+        color: var(--text);
+      }
+
+      .loading-subtitle {
+        font-size: 13px;
+        color: var(--text-muted);
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+
+      .dots::after {
+        content: "";
+        display: inline-block;
+        width: 14px;
+        text-align: left;
+        animation: ellipsis 1.5s infinite;
+      }
+
+      @keyframes ellipsis {
+        0% { content: ""; }
+        25% { content: "."; }
+        50% { content: ".."; }
+        75% { content: "..."; }
+      }
+
+      .progress-track {
+        width: 160px;
+        height: 3px;
+        border-radius: 3px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+        position: relative;
+        margin-top: 4px;
+      }
+
+      .progress-bar {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 45%;
+        border-radius: 3px;
+        background: linear-gradient(90deg, var(--brand-start), var(--brand-end));
+        animation: shimmer 1.6s ease-in-out infinite;
+      }
+
+      @keyframes shimmer {
+        0% {
+          left: -45%;
+        }
+        100% {
+          left: 100%;
+        }
+      }
+
+      @keyframes pulseGlow {
+        0%, 100% {
+          opacity: 0.35;
+          transform: scale(1);
+        }
+        50% {
+          opacity: 0.6;
+          transform: scale(1.08);
+        }
+      }
+
+      /* 2. Connection Error State (Shown only after 10s timeout) */
+      #error-view {
+        display: none;
+        opacity: 0;
+        transition: opacity 0.35s ease;
+      }
+
+      #error-view.visible {
+        display: flex;
+        opacity: 1;
       }
 
       .card {
@@ -124,6 +261,7 @@
         align-items: center;
         gap: 16px;
         box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+        animation: fadeIn 0.3s ease-out;
       }
 
       .icon-badge {
@@ -277,6 +415,17 @@
           transform: rotate(360deg);
         }
       }
+
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+          transform: scale(0.98);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1);
+        }
+      }
     </style>
   </head>
   <body>
@@ -301,65 +450,102 @@
       </div>
     </div>
 
-    <!-- Centered Error Card -->
+    <!-- Main Content Area -->
     <div class="content">
-      <div class="card">
-        <div class="icon-badge">
-          <!-- Disconnected Cloud / Server Icon -->
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M22.61 16.95A5 5 0 0 0 18 10h-1.26a8 8 0 0 0-7.05-6M5 5a8 8 0 0 0-4 7h1a5 5 0 0 0 9 3"></path>
-            <line x1="2" y1="2" x2="22" y2="22"></line>
-          </svg>
+      <!-- 1. Smooth Launch Loading View (Default) -->
+      <div id="loading-view">
+        <div class="logo-container">
+          <div class="logo-glow"></div>
+          <div class="logo-badge">C</div>
         </div>
-
-        <h1>Cannot Connect to Development Server</h1>
-
-        <div class="reason-badge">
-          <span>ERR_CONNECTION_REFUSED • http://localhost:1420</span>
+        <div class="loading-meta">
+          <h2 class="loading-title">Starting Clipbox</h2>
+          <p id="loading-status" class="loading-subtitle">
+            <span>Connecting to development server</span><span class="dots"></span>
+          </p>
+          <div class="progress-track">
+            <div class="progress-bar"></div>
+          </div>
         </div>
+      </div>
 
-        <p class="description">
-          Clipbox was launched in development mode, but the local Vite development server is not running or still starting up.
-        </p>
+      <!-- 2. Deferred Error Card (Appears only if server fails to connect after 10s) -->
+      <div id="error-view">
+        <div class="card">
+          <div class="icon-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22.61 16.95A5 5 0 0 0 18 10h-1.26a8 8 0 0 0-7.05-6M5 5a8 8 0 0 0-4 7h1a5 5 0 0 0 9 3"></path>
+              <line x1="2" y1="2" x2="22" y2="22"></line>
+            </svg>
+          </div>
 
-        <div class="help-box">
-          • Start the dev server: <code>npm run dev</code> or <code>npm run tauri dev</code><br />
-          • Once Vite is ready, click <b>Retry Connection</b> below.
-        </div>
+          <h1>Cannot Connect to Development Server</h1>
 
-        <div class="status-pill">
-          <div class="pulse-dot"></div>
-          <span id="status-text">Auto-checking for server every 2s...</span>
-        </div>
+          <div class="reason-badge">
+            <span>ERR_CONNECTION_REFUSED • http://localhost:1420</span>
+          </div>
 
-        <div class="actions">
-          <button id="btn-retry" class="btn btn-primary">
-            <span class="spinner"></span>
-            <span class="btn-text">Retry Connection</span>
-          </button>
-          <button id="btn-restart" class="btn btn-secondary">
-            Restart Application
-          </button>
+          <p class="description">
+            Clipbox was launched in development mode, but the local Vite server did not respond after 10 seconds.
+          </p>
+
+          <div class="help-box">
+            • Start the dev server: <code>npm run dev</code> or <code>npm run tauri dev</code><br />
+            • Once Vite is ready, click <b>Retry Connection</b> below.
+          </div>
+
+          <div class="status-pill">
+            <div class="pulse-dot"></div>
+            <span id="error-status-text">Auto-checking for server every 2s...</span>
+          </div>
+
+          <div class="actions">
+            <button id="btn-retry" class="btn btn-primary">
+              <span class="spinner"></span>
+              <span class="btn-text">Retry Connection</span>
+            </button>
+            <button id="btn-restart" class="btn btn-secondary">
+              Restart Application
+            </button>
+          </div>
         </div>
       </div>
     </div>
 
     <script>
       const TARGET_URL = "http://localhost:1420";
-      const statusText = document.getElementById("status-text");
+      const GRACE_PERIOD_MS = 10000; // 10-second startup grace period before showing error screen
+      const startTime = Date.now();
+
+      const loadingView = document.getElementById("loading-view");
+      const loadingStatus = document.getElementById("loading-status");
+      const errorView = document.getElementById("error-view");
+      const errorStatusText = document.getElementById("error-status-text");
       const retryBtn = document.getElementById("btn-retry");
       const restartBtn = document.getElementById("btn-restart");
       const minimizeBtn = document.getElementById("btn-minimize");
       const closeBtn = document.getElementById("btn-close");
 
       let isChecking = false;
+      let hasTimedOut = false;
+      let checkIntervalId = null;
 
-      // Check if Vite is responsive
+      function transitionToErrorState() {
+        if (hasTimedOut) return;
+        hasTimedOut = true;
+        loadingView.style.display = "none";
+        errorView.classList.add("visible");
+
+        // Slow down polling to every 2s once in error state
+        if (checkIntervalId) clearInterval(checkIntervalId);
+        checkIntervalId = setInterval(probeServer, 2000);
+      }
+
       async function probeServer() {
         if (isChecking) return;
         isChecking = true;
+
         try {
-          // Send request with short timeout
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), 1200);
 
@@ -370,23 +556,32 @@
           });
           clearTimeout(timeoutId);
 
-          // Success! Redirect to dev server
-          statusText.textContent = "Server detected! Connecting...";
+          // Connection successful! Redirect seamlessly into the app
+          if (loadingStatus) {
+            loadingStatus.innerHTML = "<span>Connected! Loading Clipbox...</span>";
+          }
+          if (errorStatusText) {
+            errorStatusText.textContent = "Server detected! Connecting...";
+          }
           window.location.href = TARGET_URL;
         } catch (err) {
-          // Still unreachable
           isChecking = false;
+
+          // Check if the 10-second startup grace period has expired
+          if (!hasTimedOut && Date.now() - startTime >= GRACE_PERIOD_MS) {
+            transitionToErrorState();
+          }
         }
       }
 
-      // Manual retry
+      // Manual retry button
       retryBtn.addEventListener("click", async () => {
         retryBtn.classList.add("loading");
-        statusText.textContent = "Probing http://localhost:1420...";
+        errorStatusText.textContent = "Probing http://localhost:1420...";
         await probeServer();
         setTimeout(() => {
           retryBtn.classList.remove("loading");
-          statusText.textContent = "Auto-checking for server every 2s...";
+          errorStatusText.textContent = "Auto-checking for server every 2s...";
         }, 800);
       });
 
@@ -424,10 +619,10 @@
         }
       });
 
-      // Auto-poll every 2 seconds
-      setInterval(probeServer, 2000);
-      // Also probe on initial load
-      setTimeout(probeServer, 600);
+      // Probe frequently (every 350ms) during the startup grace period
+      checkIntervalId = setInterval(probeServer, 350);
+      // Also probe immediately after first paint
+      setTimeout(probeServer, 100);
     </script>
   </body>
 </html>
