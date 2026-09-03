@@ -12,6 +12,7 @@ mod clipboard;
 mod file_clipboard;
 mod image_clipboard;
 mod source;
+mod window_chrome;
 
 struct AppState {
     database_path: PathBuf,
@@ -125,23 +126,23 @@ fn minimize_window(window: tauri::Window) -> Result<(), String> {
 fn toggle_maximize_window(window: tauri::Window) -> Result<(), String> {
     #[cfg(windows)]
     {
-        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::Foundation::HWND;
         use windows::Win32::UI::WindowsAndMessaging::{
-            IsZoomed, PostMessageW, SC_MAXIMIZE, SC_RESTORE, WM_SYSCOMMAND,
+            IsZoomed, ShowWindow, SW_MAXIMIZE, SW_RESTORE,
         };
 
         let raw_hwnd = window.hwnd().map_err(|error| error.to_string())?;
         let hwnd = HWND(raw_hwnd.0 as _);
         let command = if unsafe { IsZoomed(hwnd).as_bool() } {
-            SC_RESTORE
+            SW_RESTORE
         } else {
-            SC_MAXIMIZE
+            SW_MAXIMIZE
         };
 
         unsafe {
-            PostMessageW(Some(hwnd), WM_SYSCOMMAND, WPARAM(command as usize), LPARAM(0))
-                .map_err(|error| error.to_string())
+            let _ = ShowWindow(hwnd, command);
         }
+        Ok(())
     }
 
     #[cfg(not(windows))]
@@ -978,6 +979,10 @@ pub fn run() {
 
             // Initial window visibility and development connection error handling
             if let Some(window) = app.get_webview_window("main") {
+                if let Err(error) = window_chrome::install(&window) {
+                    eprintln!("could not install native titlebar hit testing: {error}");
+                }
+
                 let _ = window.set_min_size(Some(tauri::LogicalSize::new(900.0, 700.0)));
                 if let Ok(size) = window.inner_size() {
                     if let Ok(scale_factor) = window.scale_factor() {
