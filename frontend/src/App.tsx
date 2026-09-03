@@ -410,8 +410,8 @@ export default function App() {
 
       const hasOpenDialog = Boolean(document.querySelector('[role="dialog"]'));
 
-      // Ctrl+F or Ctrl+K focuses and selects inside the app search bar
-      if ((event.metaKey || event.ctrlKey) && (key === "f" || key === "k")) {
+      // Ctrl+F focuses and selects inside the app search bar
+      if ((event.metaKey || event.ctrlKey) && key === "f") {
         event.preventDefault();
         searchInputRef.current?.focus();
         searchInputRef.current?.select();
