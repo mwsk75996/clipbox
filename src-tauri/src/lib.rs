@@ -265,8 +265,10 @@ fn get_database_path(state: tauri::State<'_, AppState>) -> Result<String, String
 fn open_database_directory(state: tauri::State<'_, AppState>) -> Result<(), String> {
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        let clean_path = state.database_path.to_string_lossy().replace('/', "\\");
         std::process::Command::new("explorer")
-            .arg(format!("/select,\"{}\"", state.database_path.display()))
+            .raw_arg(format!("/select,\"{clean_path}\""))
             .spawn()
             .map_err(|e| format!("could not open explorer: {e}"))?;
         Ok(())
@@ -276,6 +278,48 @@ fn open_database_directory(state: tauri::State<'_, AppState>) -> Result<(), Stri
         if let Some(parent) = state.database_path.parent() {
             let _ = std::process::Command::new("xdg-open").arg(parent).spawn();
         }
+        Ok(())
+    }
+}
+
+// ----------
+// Open in File Explorer Command
+// Description: Opens native Windows File Explorer to reveal and select a file, or directly opens a directory.
+// ----------
+
+#[tauri::command]
+fn open_in_explorer(path: String) -> Result<(), String> {
+    let clean_path = path.replace('/', "\\");
+    let p = std::path::PathBuf::from(&clean_path);
+    if !p.exists() {
+        return Err("File or folder does not exist on disk".into());
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        if p.is_dir() {
+            std::process::Command::new("explorer")
+                .raw_arg(format!("\"{clean_path}\""))
+                .spawn()
+                .map_err(|e| format!("could not open explorer: {e}"))?;
+        } else {
+            std::process::Command::new("explorer")
+                .raw_arg(format!("/select,\"{clean_path}\""))
+                .spawn()
+                .map_err(|e| format!("could not open explorer: {e}"))?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    {
+        let target = if p.is_dir() {
+            p
+        } else {
+            p.parent().map(|parent| parent.to_path_buf()).unwrap_or(p)
+        };
+        let _ = std::process::Command::new("xdg-open").arg(target).spawn();
         Ok(())
     }
 }
@@ -603,6 +647,7 @@ pub fn run() {
             restart_app,
             save_image_to_file,
             copy_files_to_clipboard,
+            open_in_explorer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clipbox");
