@@ -73,15 +73,10 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
       return;
     }
 
-    e.preventDefault();
-
-    if (e.detail === 2) {
-      toggleMaximize();
-      return;
-    }
-
-    if (e.detail === 1) {
-      invoke("begin_window_drag").catch((err) => {
+    // Preserve the original instant-drag path. Tauri handles the second press
+    // on the marked drag region as a native maximize/restore action.
+    if (e.detail === 1 && appWindow) {
+      invoke("start_dragging").catch((err) => {
         console.warn("Could not start window drag", err);
       });
     }
@@ -105,11 +100,15 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
   return (
     <div
       data-window-chrome
+      data-tauri-drag-region
       onMouseDown={handleTitlebarMouseDown}
       className="h-9 w-full bg-card border-b flex items-center justify-between select-none z-[60] sticky top-0 cursor-default"
     >
       {/* App Branding (Draggable) */}
-      <div className="flex items-center gap-2 px-3 h-full select-none shrink-0 pointer-events-none">
+      <div
+        data-tauri-drag-region
+        className="flex items-center gap-2 px-3 h-full select-none shrink-0"
+      >
         <img
           src={clipboxLogo}
           alt="Clipbox Logo"
@@ -123,7 +122,10 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
       </div>
 
       {/* Middle Drag Region with Centered Entries Count Badge */}
-      <div className="flex-1 h-full flex items-center justify-center cursor-default select-none pointer-events-none">
+      <div
+        data-tauri-drag-region
+        className="flex-1 h-full flex items-center justify-center cursor-default select-none"
+      >
         {typeof entriesCount === "number" && (
           <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-secondary/70 border border-border/80 text-[11px] font-medium text-muted-foreground shadow-sm pointer-events-none">
             <ClipboardList className="size-3 text-muted-foreground" />
@@ -136,6 +138,7 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
 
       {/* Window Controls (Not draggable) */}
       <div
+        data-tauri-drag-region="false"
         className="native-window-no-drag flex items-center h-full pointer-events-auto shrink-0 min-w-[100px] justify-end"
         onMouseDown={(e) => e.stopPropagation()}
       >

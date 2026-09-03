@@ -122,34 +122,29 @@ fn minimize_window(window: tauri::Window) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn begin_window_drag(window: tauri::Window) -> Result<(), String> {
+fn start_dragging(window: tauri::Window) -> Result<(), String> {
     #[cfg(windows)]
     {
         use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
         use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            PostMessageW, HTCAPTION, SC_MOVE, WM_SYSCOMMAND,
-        };
+        use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN};
 
-        let raw_hwnd = window.hwnd().map_err(|error| error.to_string())?;
-        let hwnd = HWND(raw_hwnd.0 as _);
-
-        unsafe {
-            let _ = ReleaseCapture();
-            PostMessageW(
-                Some(hwnd),
-                WM_SYSCOMMAND,
-                WPARAM((SC_MOVE | HTCAPTION) as usize),
-                LPARAM(0),
-            )
-            .map_err(|error| error.to_string())
+        if let Ok(raw_hwnd) = window.hwnd() {
+            unsafe {
+                let _ = ReleaseCapture();
+                let hwnd = HWND(raw_hwnd.0 as _);
+                SendMessageW(
+                    hwnd,
+                    WM_NCLBUTTONDOWN,
+                    Some(WPARAM(HTCAPTION as usize)),
+                    Some(LPARAM(0)),
+                );
+                return Ok(());
+            }
         }
     }
 
-    #[cfg(not(windows))]
-    {
-        window.start_dragging().map_err(|error| error.to_string())
-    }
+    window.start_dragging().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -986,7 +981,7 @@ pub fn run() {
             delete_entry,
             toggle_pinned,
             minimize_window,
-            begin_window_drag,
+            start_dragging,
             close_window,
             hide_window,
             show_window,
