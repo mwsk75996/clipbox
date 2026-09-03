@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "clipbox"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -374,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "clipbox-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "rusqlite",
 ]
