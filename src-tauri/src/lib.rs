@@ -122,6 +122,74 @@ fn minimize_window(window: tauri::Window) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn toggle_maximize_window(window: tauri::Window) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            IsZoomed, PostMessageW, SC_MAXIMIZE, SC_RESTORE, WM_SYSCOMMAND,
+        };
+
+        let raw_hwnd = window.hwnd().map_err(|error| error.to_string())?;
+        let hwnd = HWND(raw_hwnd.0 as _);
+        let command = if unsafe { IsZoomed(hwnd).as_bool() } {
+            SC_RESTORE
+        } else {
+            SC_MAXIMIZE
+        };
+
+        unsafe {
+            PostMessageW(Some(hwnd), WM_SYSCOMMAND, WPARAM(command as usize), LPARAM(0))
+                .map_err(|error| error.to_string())
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        if window.is_maximized().unwrap_or(false) {
+            window.unmaximize().map_err(|error| error.to_string())
+        } else {
+            window.maximize().map_err(|error| error.to_string())
+        }
+    }
+}
+
+#[tauri::command]
+fn begin_window_drag(window: tauri::Window) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
+        use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetCursorPos, PostMessageW, HTCAPTION, WM_NCLBUTTONDOWN,
+        };
+
+        let raw_hwnd = window.hwnd().map_err(|error| error.to_string())?;
+        let hwnd = HWND(raw_hwnd.0 as _);
+        let mut cursor = POINT::default();
+        unsafe { GetCursorPos(&mut cursor) }.map_err(|error| error.to_string())?;
+        let coordinates =
+            ((cursor.y as u16 as u32) << 16) | cursor.x as u16 as u32;
+
+        unsafe {
+            let _ = ReleaseCapture();
+            PostMessageW(
+                Some(hwnd),
+                WM_NCLBUTTONDOWN,
+                WPARAM(HTCAPTION as usize),
+                LPARAM(coordinates as isize),
+            )
+            .map_err(|error| error.to_string())
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        window.start_dragging().map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
 fn close_window(window: tauri::Window) -> Result<(), String> {
     // Hide to system tray instead of terminating the app
     window.hide().map_err(|error| error.to_string())
@@ -955,6 +1023,8 @@ pub fn run() {
             delete_entry,
             toggle_pinned,
             minimize_window,
+            toggle_maximize_window,
+            begin_window_drag,
             close_window,
             hide_window,
             show_window,

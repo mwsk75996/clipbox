@@ -17,7 +17,6 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { Button } from "@/components/ui/button";
 import type { ClipboardEntry } from "../App";
@@ -284,7 +283,7 @@ export function ImageLightbox({
             !(e.target as HTMLElement).closest("button") &&
             "__TAURI_INTERNALS__" in window
           ) {
-            getCurrentWindow().startDragging().catch(console.warn);
+            invoke("begin_window_drag").catch(console.warn);
           }
         }}
         className="h-14 w-full bg-card/90 border-b border-border/60 px-4 flex items-center justify-between gap-3 shrink-0 select-none shadow-md backdrop-blur-sm"

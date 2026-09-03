@@ -1,6 +1,6 @@
 // ----------
 // Custom Desktop Titlebar
-// Description: Native-style titlebar using Tauri drag regions for dragging and double-click maximize, with responsive window controls and debounced maximized-state synchronization.
+// Description: Native-style titlebar that starts native dragging on the first real pointer movement and toggles maximize on the second mouse-down without waiting for a browser double-click event.
 // ----------
 
 import * as React from "react";
@@ -15,6 +15,7 @@ interface TitlebarProps {
 
 export function Titlebar({ entriesCount }: TitlebarProps) {
   const [isMaximized, setIsMaximized] = React.useState(false);
+  const dragCleanupRef = React.useRef<(() => void) | null>(null);
   const appWindow = React.useMemo(() => {
     if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
       return getCurrentWindow();
@@ -47,8 +48,55 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
     return () => {
       window.removeEventListener("resize", handleResize);
       window.clearTimeout(resizeTimer);
+      dragCleanupRef.current?.();
     };
   }, [syncMaximizedState]);
+
+  const toggleMaximize = React.useCallback(() => {
+    setIsMaximized((current) => !current);
+    invoke("toggle_maximize_window").catch((err) => {
+      console.warn("Could not toggle maximize", err);
+      void syncMaximizedState();
+    });
+  }, [syncMaximizedState]);
+
+  const handleTitlebarMouseDown = (event: React.MouseEvent) => {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) {
+      return;
+    }
+
+    dragCleanupRef.current?.();
+
+    // Toggle on the second press instead of waiting for the delayed dblclick event.
+    if (event.detail === 2) {
+      toggleMaximize();
+      return;
+    }
+
+    if (event.detail !== 1) return;
+
+    const startX = event.screenX;
+    const startY = event.screenY;
+
+    const cleanup = () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", cleanup);
+      dragCleanupRef.current = null;
+    };
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      if (moveEvent.screenX === startX && moveEvent.screenY === startY) return;
+
+      cleanup();
+      invoke("begin_window_drag").catch((err) => {
+        console.warn("Could not start dragging", err);
+      });
+    };
+
+    dragCleanupRef.current = cleanup;
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", cleanup);
+  };
 
   const handleMinimize = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -60,12 +108,7 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
   const handleToggleMaximize = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!appWindow) return;
-
-    setIsMaximized((current) => !current);
-    appWindow.toggleMaximize().catch((err) => {
-      console.warn("Could not toggle maximize", err);
-      void syncMaximizedState();
-    });
+    toggleMaximize();
   };
 
   const handleClose = async (e: React.MouseEvent) => {
@@ -80,7 +123,7 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
   return (
     <div
       data-window-chrome
-      data-tauri-drag-region="deep"
+      onMouseDown={handleTitlebarMouseDown}
       className="h-9 w-full bg-card border-b flex items-center justify-between select-none z-[60] sticky top-0 cursor-default"
     >
       {/* App Branding (Draggable) */}
@@ -111,7 +154,6 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
 
       {/* Window Controls (Not draggable) */}
       <div
-        data-tauri-drag-region="false"
         className="flex items-center h-full pointer-events-auto shrink-0 min-w-[100px] justify-end"
         onMouseDown={(e) => e.stopPropagation()}
       >
