@@ -40,14 +40,19 @@ export function ImageLightbox({
   const [saving, setSaving] = React.useState(false);
   const [saveMessage, setSaveMessage] = React.useState<string | null>(null);
 
-  // Reset zoom and edit state when modal opens with a new entry
+  const prevEntryIdRef = React.useRef<number | undefined>(undefined);
+  const prevIsOpenRef = React.useRef(false);
+
+  // Reset zoom and edit state ONLY when modal opens afresh or when switching to a different clip
   React.useEffect(() => {
-    if (isOpen) {
+    if (isOpen && (!prevIsOpenRef.current || prevEntryIdRef.current !== entry?.id)) {
       setIsEditing(false);
       setIsZoomed(false);
       setCopied(false);
       setSaveMessage(null);
     }
+    prevIsOpenRef.current = isOpen;
+    prevEntryIdRef.current = entry?.id;
   }, [isOpen, entry?.id]);
 
   // Keyboard shortcut listener for Esc
@@ -82,10 +87,6 @@ export function ImageLightbox({
           sourceEntryId={entry.id}
           initialDimensions={entry.imageDimensions}
           onClose={() => setIsEditing(false)}
-          onSavedNewClip={() => {
-            setIsEditing(false);
-            onClose();
-          }}
         />
       </div>
     );

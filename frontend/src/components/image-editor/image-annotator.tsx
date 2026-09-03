@@ -1088,11 +1088,11 @@ export function ImageAnnotator({
       }
       setSavedClip(true);
       setStatusMessage("Saved as new clip!");
+      if (onSavedNewClip) onSavedNewClip();
       setTimeout(() => {
         setSavedClip(false);
         setStatusMessage(null);
-        if (onSavedNewClip) onSavedNewClip();
-      }, 1500);
+      }, 2500);
     } catch (err) {
       console.error("Failed to save as new clip", err);
     }
