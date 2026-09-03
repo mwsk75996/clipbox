@@ -498,6 +498,11 @@ export default function App() {
     event?.stopPropagation();
     inFlightDeletionsRef.current.add(id);
     setEntries((prev) => prev.filter((entry) => entry.id !== id));
+    // Re-sync after success: the backend resequences higher ids on every
+    // delete, so displayed ids above the deleted one are stale afterwards.
+    // A second delete using a stale id would archive the wrong record
+    // (or nothing, leaving a ghost that only a later refetch reveals).
+    let synced = false;
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
         const outcome = await invoke<string>("delete_entry", { id });
@@ -506,6 +511,7 @@ export default function App() {
         } else if (outcome === "deleted") {
           showToast("Deleted permanently");
         }
+        synced = outcome === "archived" || outcome === "deleted";
       }
     } catch (err) {
       console.error("Failed to delete entry", err);
@@ -513,6 +519,9 @@ export default function App() {
       fetchEntries();
     } finally {
       inFlightDeletionsRef.current.delete(id);
+    }
+    if (synced) {
+      fetchEntries();
     }
   };
 
