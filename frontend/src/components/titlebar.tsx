@@ -170,9 +170,9 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
   const handleClose = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await invoke("close_window");
+      await invoke("hide_window");
     } catch (err) {
-      console.warn("Could not close window", err);
+      console.warn("Could not hide window", err);
     }
   };
 

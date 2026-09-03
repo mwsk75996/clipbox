@@ -76,6 +76,11 @@ export interface ClipboardEntry {
   sourceUrl?: string | null;
 }
 
+// Minimum time between full feed reloads triggered by window focus.
+// Real-time clipboard events keep the visible feed updated, so a focus that
+// closely follows any fetch skips the reload instead of rerendering everything.
+const FOCUS_REFETCH_MIN_INTERVAL_MS = 30_000;
+
 const PREVIEW_ENTRIES: ClipboardEntry[] = [
   {
     id: 3,
@@ -172,6 +177,7 @@ export default function App() {
 
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const inFlightDeletionsRef = React.useRef<Set<number>>(new Set());
+  const lastFetchTimeRef = React.useRef<number>(0);
   const lastMousePosRef = React.useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const lastKeyboardNavTimeRef = React.useRef<number>(0);
 
@@ -218,6 +224,7 @@ export default function App() {
 
   // Fetch clipboard entries from Tauri IPC with in-flight deletion protection
   const fetchEntries = React.useCallback(async () => {
+    lastFetchTimeRef.current = Date.now();
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
         const result = await invoke<ClipboardEntry[]>("list_entries");
@@ -234,7 +241,12 @@ export default function App() {
   // Initial load and re-sync on window focus
   React.useEffect(() => {
     fetchEntries();
-    const handleFocus = () => fetchEntries();
+    const handleFocus = () => {
+      if (Date.now() - lastFetchTimeRef.current < FOCUS_REFETCH_MIN_INTERVAL_MS) {
+        return;
+      }
+      fetchEntries();
+    };
     window.addEventListener("focus", handleFocus);
     return () => window.removeEventListener("focus", handleFocus);
   }, [fetchEntries]);
