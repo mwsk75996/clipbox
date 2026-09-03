@@ -133,59 +133,12 @@ export default function App() {
   const [expandedId, setExpandedId] = React.useState<number | null>(null);
   const [copiedId, setCopiedId] = React.useState<number | null>(null);
   const [copiedPathId, setCopiedPathId] = React.useState<number | null>(null);
+  const [focusedIndex, setFocusedIndex] = React.useState<number | null>(null);
   const [isFilterOpen, setIsFilterOpen] = React.useState(false);
   const [previewEntry, setPreviewEntry] = React.useState<ClipboardEntry | null>(null);
 
   const searchInputRef = React.useRef<HTMLInputElement>(null);
-
-  // Global shortcuts and browser prevention
-  React.useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const key = event.key.toLowerCase();
-
-      // Ctrl+F or Ctrl+K focuses and selects inside the app search bar
-      if ((event.metaKey || event.ctrlKey) && (key === "f" || key === "k")) {
-        event.preventDefault();
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
-        return;
-      }
-
-      // Escape key hides window to system tray if no modal dialog is open
-      if (event.key === "Escape") {
-        const hasOpenDialog = document.querySelector('[role="dialog"]');
-        if (!hasOpenDialog) {
-          if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-            invoke("hide_window").catch(console.error);
-          }
-        }
-      }
-
-      // Block browser default shortcuts (find, refresh, print, view source, devtools, history, etc.)
-      if (
-        event.key === "F5" ||
-        event.key === "F3" ||
-        event.key === "F12" ||
-        ((event.ctrlKey || event.metaKey) &&
-          ["r", "p", "u", "g", "h", "j", "s", "o", "n", "d", "b", "l", "w"].includes(key)) ||
-        ((event.ctrlKey || event.metaKey) && event.shiftKey && ["i", "j", "r", "c"].includes(key))
-      ) {
-        event.preventDefault();
-      }
-    };
-
-    // Block browser right-click context menu
-    const handleContextMenu = (event: MouseEvent) => {
-      event.preventDefault();
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("contextmenu", handleContextMenu);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("contextmenu", handleContextMenu);
-    };
-  }, []);
+  const deletedIdsRef = React.useRef<Set<number>>(new Set());
 
   // Restore Always on Top preference on startup
   React.useEffect(() => {
@@ -199,12 +152,12 @@ export default function App() {
     }
   }, []);
 
-  // Poll clipboard entries from Tauri IPC
+  // Fetch clipboard entries from Tauri IPC with in-flight deletion protection
   const fetchEntries = React.useCallback(async () => {
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
         const result = await invoke<ClipboardEntry[]>("list_entries");
-        setEntries(result);
+        setEntries(result.filter((e) => !deletedIdsRef.current.has(e.id)));
       } else {
         setEntries(PREVIEW_ENTRIES);
       }
@@ -213,10 +166,12 @@ export default function App() {
     }
   }, []);
 
+  // Initial load and re-sync on window focus
   React.useEffect(() => {
     fetchEntries();
-    const interval = setInterval(fetchEntries, 1000);
-    return () => clearInterval(interval);
+    const handleFocus = () => fetchEntries();
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
   }, [fetchEntries]);
 
   // Real-time clipboard capture listener for instantaneous UI updates
@@ -226,6 +181,9 @@ export default function App() {
       try {
         if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
           unlisten = await listen<ClipboardEntry>("clipboard://new-entry", (event) => {
+            if (deletedIdsRef.current.has(event.payload.id)) {
+              return;
+            }
             setEntries((prev) => {
               if (prev.some((e) => e.id === event.payload.id)) {
                 return prev;
@@ -303,8 +261,8 @@ export default function App() {
   }, [entries, searchQuery, selectedApp, selectedType, dateRange]);
 
   // Toggle pinned status of an entry
-  const handleTogglePin = async (id: number, event: React.MouseEvent) => {
-    event.stopPropagation();
+  const handleTogglePin = async (id: number, event?: React.MouseEvent) => {
+    event?.stopPropagation();
     setEntries((prev) =>
       prev.map((entry) =>
         entry.id === id ? { ...entry, isPinned: !entry.isPinned } : entry
@@ -391,8 +349,9 @@ export default function App() {
   };
 
   // Delete single entry from history and re-sequence remaining higher IDs
-  const handleDelete = async (id: number, event: React.MouseEvent) => {
-    event.stopPropagation();
+  const handleDelete = async (id: number, event?: React.MouseEvent) => {
+    event?.stopPropagation();
+    deletedIdsRef.current.add(id);
     setEntries((prev) =>
       prev
         .filter((entry) => entry.id !== id)
@@ -406,6 +365,7 @@ export default function App() {
       }
     } catch (err) {
       console.error("Failed to delete entry", err);
+      deletedIdsRef.current.delete(id);
       fetchEntries();
     }
   };
@@ -417,6 +377,164 @@ export default function App() {
     setDateRange(undefined);
     setIsFilterOpen(false);
   };
+
+  // Reset keyboard focus when search or filters change
+  React.useEffect(() => {
+    setFocusedIndex(null);
+  }, [searchQuery, selectedApp, selectedType, dateRange]);
+
+  // Auto-scroll focused card into view smoothly
+  React.useEffect(() => {
+    if (focusedIndex !== null) {
+      const cardEl = document.querySelector(`[data-card-index="${focusedIndex}"]`);
+      if (cardEl) {
+        cardEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    }
+  }, [focusedIndex]);
+
+  const hasActiveFilters =
+    selectedApp !== "all" || selectedType !== "all" || Boolean(dateRange?.from);
+
+  // Global shortcuts, keyboard navigation, and browser prevention
+  React.useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      const activeEl = document.activeElement;
+      const isInputFocused =
+        activeEl?.tagName === "INPUT" ||
+        activeEl?.tagName === "TEXTAREA" ||
+        (activeEl as HTMLElement)?.isContentEditable;
+
+      const hasOpenDialog = Boolean(document.querySelector('[role="dialog"]'));
+
+      // Ctrl+F or Ctrl+K focuses and selects inside the app search bar
+      if ((event.metaKey || event.ctrlKey) && (key === "f" || key === "k")) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        setFocusedIndex(null);
+        return;
+      }
+
+      // If user is currently typing in an input
+      if (isInputFocused) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          searchInputRef.current?.blur();
+          setFocusedIndex(null);
+        }
+        return;
+      }
+
+      // Ignore when modal dialog or lightbox is active
+      if (hasOpenDialog || previewEntry !== null) {
+        return;
+      }
+
+      // Escape key clears search/filters, un-focuses, or hides window to tray
+      if (event.key === "Escape") {
+        if (searchQuery || hasActiveFilters) {
+          clearFilters();
+          setFocusedIndex(null);
+        } else if (focusedIndex !== null) {
+          setFocusedIndex(null);
+        } else if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+          invoke("hide_window").catch(console.error);
+        }
+        return;
+      }
+
+      // Arrow Down: Navigate downward through feed
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        if (filteredEntries.length === 0) return;
+        setFocusedIndex((prev) => {
+          if (prev === null) return 0;
+          return Math.min(prev + 1, filteredEntries.length - 1);
+        });
+        return;
+      }
+
+      // Arrow Up: Navigate upward or return to search bar
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setFocusedIndex((prev) => {
+          if (prev === null || prev === 0) {
+            searchInputRef.current?.focus();
+            return null;
+          }
+          return prev - 1;
+        });
+        return;
+      }
+
+      // Enter: Copy focused entry and hide window to tray
+      if (event.key === "Enter" && focusedIndex !== null && filteredEntries[focusedIndex]) {
+        event.preventDefault();
+        const targetEntry = filteredEntries[focusedIndex];
+        handleCopy(targetEntry);
+        if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+          invoke("hide_window").catch(console.error);
+        }
+        return;
+      }
+
+      // Space: Toggle preview expansion for multiline text
+      if (event.key === " " && focusedIndex !== null && filteredEntries[focusedIndex]) {
+        event.preventDefault();
+        const targetEntry = filteredEntries[focusedIndex];
+        const lines = stripLeadingEmptyLines(targetEntry.content).split(/\r?\n/);
+        if (lines.length > 1) {
+          setExpandedId((prev) => (prev === targetEntry.id ? null : targetEntry.id));
+        }
+        return;
+      }
+
+      // Delete: Remove focused entry without flicker
+      if (event.key === "Delete" && focusedIndex !== null && filteredEntries[focusedIndex]) {
+        event.preventDefault();
+        const targetEntry = filteredEntries[focusedIndex];
+        handleDelete(targetEntry.id);
+        if (focusedIndex >= filteredEntries.length - 1) {
+          setFocusedIndex(Math.max(0, filteredEntries.length - 2));
+        }
+        return;
+      }
+
+      // P: Toggle pin
+      if ((event.key === "p" || event.key === "P") && focusedIndex !== null && filteredEntries[focusedIndex]) {
+        event.preventDefault();
+        const targetEntry = filteredEntries[focusedIndex];
+        handleTogglePin(targetEntry.id);
+        return;
+      }
+
+      // Block browser default shortcuts (find, refresh, print, view source, devtools, history, etc.)
+      if (
+        event.key === "F5" ||
+        event.key === "F3" ||
+        event.key === "F12" ||
+        ((event.ctrlKey || event.metaKey) &&
+          ["r", "p", "u", "g", "h", "j", "s", "o", "n", "d", "b", "l", "w"].includes(key)) ||
+        ((event.ctrlKey || event.metaKey) && event.shiftKey && ["i", "j", "r", "c"].includes(key))
+      ) {
+        event.preventDefault();
+      }
+    };
+
+    // Block browser right-click context menu
+    const handleContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("contextmenu", handleContextMenu);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("contextmenu", handleContextMenu);
+    };
+  }, [filteredEntries, focusedIndex, previewEntry, searchQuery, hasActiveFilters]);
 
   // Handle card expansion while preventing collapse when selecting/marking text
   const handleCardClick = (
@@ -442,9 +560,6 @@ export default function App() {
     setExpandedId((prev) => (prev === id ? null : id));
   };
 
-  const hasActiveFilters =
-    selectedApp !== "all" || selectedType !== "all" || Boolean(dateRange?.from);
-
   return (
     <div className="h-screen w-screen bg-background text-foreground flex flex-col font-sans select-none overflow-hidden transition-colors duration-200">
       {/* Native Desktop Titlebar with Centered Entries Count */}
@@ -463,6 +578,13 @@ export default function App() {
                 placeholder="Search history..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowDown" && filteredEntries.length > 0) {
+                    e.preventDefault();
+                    searchInputRef.current?.blur();
+                    setFocusedIndex(0);
+                  }
+                }}
                 className="pl-9 pr-14 bg-background h-9"
               />
               <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded border bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground select-none pointer-events-none">
@@ -556,9 +678,9 @@ export default function App() {
         </header>
 
         {/* Main Content Area */}
-        <main className="flex-1 max-w-4xl w-full mx-auto px-6 pt-5 pb-0 overflow-hidden flex flex-col min-h-0 relative">
+        <main className="flex-1 w-full overflow-hidden flex flex-col min-h-0 relative">
           {filteredEntries.length === 0 ? (
-            <div className="flex flex-col items-center justify-center my-auto py-16 text-center">
+            <div className="max-w-4xl w-full mx-auto px-6 flex flex-col items-center justify-center my-auto py-16 text-center">
               <p className="text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
                 Your Clipboard
               </p>
@@ -580,23 +702,30 @@ export default function App() {
               )}
             </div>
           ) : (
-            <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
-              <ScrollArea className="flex-1 h-full pr-1 fade-bottom-mask">
-                <div className="space-y-3 pt-1 pb-20 px-1">
-                {filteredEntries.map((entry) => {
+            <div className="relative flex-1 w-full min-h-0 flex flex-col overflow-hidden">
+              <ScrollArea className="flex-1 w-full h-full fade-bottom-mask">
+                <div className="max-w-4xl w-full mx-auto px-6 pt-5 pb-20 space-y-3">
+                {filteredEntries.map((entry, index) => {
                   const content = stripLeadingEmptyLines(entry.content);
                   const lines = content.split(/\r?\n/);
                   const isMultiLine = lines.length > 1;
                   const isExpanded = expandedId === entry.id;
+                  const isFocused = focusedIndex === index;
                   const appName = sourceLabel(entry);
 
                   return (
                     <Card
                       key={entry.id}
-                      onClick={(e) =>
-                        handleCardClick(entry.id, isMultiLine, e)
-                      }
+                      data-card-index={index}
+                      onClick={(e) => {
+                        setFocusedIndex(index);
+                        handleCardClick(entry.id, isMultiLine, e);
+                      }}
                       className={`transition-all border hover:border-primary/40 cursor-pointer shadow-sm ${
+                        isFocused
+                          ? "ring-2 ring-primary border-primary shadow-md"
+                          : ""
+                      } ${
                         entry.isPinned
                           ? "border-primary/40 bg-primary/[0.03] dark:bg-primary/[0.05] ring-1 ring-primary/20"
                           : ""

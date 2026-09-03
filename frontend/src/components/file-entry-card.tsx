@@ -18,7 +18,9 @@ import {
   ChevronUp,
   Link,
   Check,
+  FolderOpen,
 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 
 import { Button } from "@/components/ui/button";
 import type { ClipboardEntry } from "../App";
@@ -74,6 +76,17 @@ export function FileEntryCard({
   isCopiedPaths,
 }: FileEntryCardProps) {
   const [isExpanded, setIsExpanded] = React.useState(false);
+
+  const handleOpenInExplorer = async (path: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("open_in_explorer", { path });
+      }
+    } catch (err) {
+      console.error("Could not open in explorer", err);
+    }
+  };
 
   const files: FileItem[] = React.useMemo(() => {
     if (!entry.filesData) {
@@ -139,25 +152,38 @@ export function FileEntryCard({
             </div>
           </div>
 
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onCopyPaths}
-            title="Copy path to clipboard"
-            className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground shrink-0 gap-1"
-          >
-            {isCopiedPaths ? (
-              <>
-                <Check className="size-3 text-emerald-500" />
-                <span className="text-[11px] text-emerald-500 font-medium">Path Copied</span>
-              </>
-            ) : (
-              <>
-                <Link className="size-3" />
-                <span className="text-[11px]">Copy Path</span>
-              </>
-            )}
-          </Button>
+          <div className="flex items-center gap-1 shrink-0">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={(e) => handleOpenInExplorer(singleFile.path, e)}
+              title="Reveal and select in File Explorer"
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground shrink-0 gap-1"
+            >
+              <FolderOpen className="size-3" />
+              <span className="text-[11px]">Open</span>
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onCopyPaths}
+              title="Copy path to clipboard"
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground shrink-0 gap-1"
+            >
+              {isCopiedPaths ? (
+                <>
+                  <Check className="size-3 text-emerald-500" />
+                  <span className="text-[11px] text-emerald-500 font-medium">Path Copied</span>
+                </>
+              ) : (
+                <>
+                  <Link className="size-3" />
+                  <span className="text-[11px]">Copy Path</span>
+                </>
+              )}
+            </Button>
+          </div>
         </div>
       </div>
     );
@@ -239,12 +265,21 @@ export function FileEntryCard({
                   {file.name}
                 </span>
               </div>
-              <div className="flex items-center gap-2 shrink-0 text-[11px] text-muted-foreground font-mono">
+              <div className="flex items-center gap-1.5 shrink-0 text-[11px] text-muted-foreground font-mono">
                 {file.isDirectory ? (
                   <span className="text-amber-500">Folder</span>
                 ) : (
                   <span>{formatFileSize(file.size)}</span>
                 )}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={(e) => handleOpenInExplorer(file.path, e)}
+                  title="Reveal in File Explorer"
+                  className="size-6 text-muted-foreground hover:text-foreground"
+                >
+                  <FolderOpen className="size-3" />
+                </Button>
               </div>
             </div>
           ))}

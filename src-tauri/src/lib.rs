@@ -281,6 +281,42 @@ fn open_database_directory(state: tauri::State<'_, AppState>) -> Result<(), Stri
 }
 
 // ----------
+// Open in File Explorer Command
+// Description: Opens native Windows File Explorer to reveal and select a file, or directly opens a directory.
+// ----------
+
+#[tauri::command]
+fn open_in_explorer(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err("File or folder does not exist on disk".into());
+    }
+
+    #[cfg(windows)]
+    {
+        if p.is_dir() {
+            std::process::Command::new("explorer")
+                .arg(&path)
+                .spawn()
+                .map_err(|e| format!("could not open explorer: {e}"))?;
+        } else {
+            std::process::Command::new("explorer")
+                .arg(format!("/select,\"{path}\""))
+                .spawn()
+                .map_err(|e| format!("could not open explorer: {e}"))?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    {
+        let target = if p.is_dir() { p } else { p.parent().unwrap_or(p) };
+        let _ = std::process::Command::new("xdg-open").arg(target).spawn();
+        Ok(())
+    }
+}
+
+// ----------
 // Retention Limit Setting Commands
 // Description: Queries and updates the history retention limit, immediately pruning existing surplus records if a smaller limit is selected.
 // ----------
@@ -603,6 +639,7 @@ pub fn run() {
             restart_app,
             save_image_to_file,
             copy_files_to_clipboard,
+            open_in_explorer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clipbox");
