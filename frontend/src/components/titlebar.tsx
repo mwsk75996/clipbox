@@ -32,26 +32,45 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
     return () => window.removeEventListener("resize", checkMaximized);
   }, [checkMaximized]);
 
-  const lastToggleRef = React.useRef(0);
+  const isPointerDownRef = React.useRef(false);
+  const dragStartedRef = React.useRef(false);
+  const startPosRef = React.useRef({ x: 0, y: 0 });
 
-  const handleMouseDown = (event: React.MouseEvent) => {
-    // Only drag on left mouse button
-    if (event.button !== 0) return;
+  const handlePointerDown = (e: React.PointerEvent) => {
+    // Left click only
+    if (e.button !== 0) return;
+    // Don't drag from buttons
+    if ((e.target as HTMLElement).closest("button")) return;
 
-    // Ignore clicks on buttons
-    if ((event.target as HTMLElement).closest("button")) return;
+    isPointerDownRef.current = true;
+    dragStartedRef.current = false;
+    startPosRef.current = { x: e.screenX, y: e.screenY };
+  };
 
-    // Ignore double/triple clicks on mousedown (handled cleanly by onDoubleClick)
-    if (event.detail > 1) return;
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!isPointerDownRef.current || dragStartedRef.current) return;
 
-    // Programmatically start window dragging via native Tauri IPC
-    try {
+    const dx = e.screenX - startPosRef.current.x;
+    const dy = e.screenY - startPosRef.current.y;
+    // Threshold of 4 pixels to distinguish click from intentional drag
+    if (Math.hypot(dx, dy) > 4) {
+      dragStartedRef.current = true;
+      isPointerDownRef.current = false;
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
         invoke("start_dragging").catch(() => {});
       }
-    } catch (err) {
-      console.warn("Could not start dragging", err);
     }
+  };
+
+  const handlePointerUp = () => {
+    isPointerDownRef.current = false;
+    dragStartedRef.current = false;
+  };
+
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    if (dragStartedRef.current) return;
+    handleToggleMaximize();
   };
 
   const handleMinimize = async (e: React.MouseEvent) => {
@@ -65,11 +84,6 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
 
   const handleToggleMaximize = async (e?: React.MouseEvent) => {
     e?.stopPropagation();
-    const now = Date.now();
-    // Debounce rapid successive toggles to prevent animation double-trigger
-    if (now - lastToggleRef.current < 400) return;
-    lastToggleRef.current = now;
-
     try {
       await invoke("toggle_maximize_window");
       await checkMaximized();
@@ -89,16 +103,14 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
 
   return (
     <div
-      data-tauri-drag-region
-      onMouseDown={handleMouseDown}
-      onDoubleClick={handleToggleMaximize}
-      className="h-9 w-full bg-card border-b flex items-center justify-between select-none z-50 sticky top-0 cursor-default"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onDoubleClick={handleDoubleClick}
+      className="h-9 w-full bg-card border-b flex items-center justify-between select-none z-[60] sticky top-0 cursor-default"
     >
       {/* App Branding (Draggable) */}
-      <div
-        data-tauri-drag-region
-        className="flex items-center gap-2 px-3 h-full select-none shrink-0"
-      >
+      <div className="flex items-center gap-2 px-3 h-full select-none shrink-0 pointer-events-none">
         <img
           src={clipboxLogo}
           alt="Clipbox Logo"
@@ -112,10 +124,7 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
       </div>
 
       {/* Middle Drag Region with Centered Entries Count Badge */}
-      <div
-        data-tauri-drag-region
-        className="flex-1 h-full flex items-center justify-center cursor-default select-none"
-      >
+      <div className="flex-1 h-full flex items-center justify-center cursor-default select-none pointer-events-none">
         {typeof entriesCount === "number" && (
           <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-secondary/70 border border-border/80 text-[11px] font-medium text-muted-foreground shadow-sm pointer-events-none">
             <ClipboardList className="size-3 text-muted-foreground" />
@@ -128,6 +137,7 @@ export function Titlebar({ entriesCount }: TitlebarProps) {
 
       {/* Window Controls (Not draggable) */}
       <div
+        data-tauri-drag-region="false"
         className="flex items-center h-full pointer-events-auto shrink-0 min-w-[100px] justify-end"
         onMouseDown={(e) => e.stopPropagation()}
       >
