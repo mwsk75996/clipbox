@@ -276,13 +276,8 @@ export function ImageLightbox({
     >
       {/* Top Action Bar */}
       <div
-        data-tauri-drag-region
-        onMouseDown={(e) => {
-          if (e.button === 0 && !(e.target as HTMLElement).closest("button")) {
-            invoke("start_dragging").catch(console.warn);
-          }
-        }}
-        className="h-14 w-full bg-card/90 border-b border-border/60 px-4 flex items-center justify-between gap-3 shrink-0 select-none shadow-md backdrop-blur-sm"
+        data-window-chrome
+        className="native-window-drag-region h-14 w-full bg-card/90 border-b border-border/60 px-4 flex items-center justify-between gap-3 shrink-0 select-none shadow-md backdrop-blur-sm"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Left: Metadata Badges */}

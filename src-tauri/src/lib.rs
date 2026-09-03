@@ -113,44 +113,12 @@ fn toggle_pinned(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, Str
 
 // ----------
 // Window Control Commands
-// Description: IPC commands for custom titlebar actions including minimize, toggle maximize, close, and query maximized state.
+// Description: IPC commands retained for the startup fallback page and hide-to-tray lifecycle.
 // ----------
 
 #[tauri::command]
 fn minimize_window(window: tauri::Window) -> Result<(), String> {
     window.minimize().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn toggle_maximize_window(window: tauri::Window) -> Result<(), String> {
-    if window.is_maximized().unwrap_or(false) {
-        window.unmaximize().map_err(|error| error.to_string())
-    } else {
-        window.maximize().map_err(|error| error.to_string())
-    }
-}
-
-#[tauri::command]
-fn close_window(window: tauri::Window) -> Result<(), String> {
-    // Hide to system tray instead of terminating the app
-    window.hide().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn hide_window(window: tauri::Window) -> Result<(), String> {
-    window.hide().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn show_window(window: tauri::Window) -> Result<(), String> {
-    window.show().map_err(|error| error.to_string())?;
-    window.unminimize().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn exit_app(app: tauri::AppHandle) {
-    app.exit(0);
 }
 
 #[tauri::command]
@@ -180,8 +148,26 @@ fn start_dragging(window: tauri::Window) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn is_window_maximized(window: tauri::Window) -> Result<bool, String> {
-    window.is_maximized().map_err(|error| error.to_string())
+fn close_window(window: tauri::Window) -> Result<(), String> {
+    // Hide to system tray instead of terminating the app
+    window.hide().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn hide_window(window: tauri::Window) -> Result<(), String> {
+    window.hide().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn show_window(window: tauri::Window) -> Result<(), String> {
+    window.show().map_err(|error| error.to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn exit_app(app: tauri::AppHandle) {
+    app.exit(0);
 }
 
 // ----------
@@ -995,15 +981,13 @@ pub fn run() {
             delete_entry,
             toggle_pinned,
             minimize_window,
-            toggle_maximize_window,
+            start_dragging,
             close_window,
             hide_window,
             show_window,
             exit_app,
             copy_to_clipboard,
             copy_image_to_clipboard,
-            start_dragging,
-            is_window_maximized,
             set_always_on_top,
             is_always_on_top,
             is_autostart_enabled,
