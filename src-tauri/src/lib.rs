@@ -115,8 +115,22 @@ fn minimize_window(window: tauri::Window) -> Result<(), String> {
     window.minimize().map_err(|error| error.to_string())
 }
 
+static LAST_MAXIMIZE_TOGGLE: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
+
 #[tauri::command]
 fn toggle_maximize_window(window: tauri::Window) -> Result<(), String> {
+    let mut guard = LAST_MAXIMIZE_TOGGLE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let now = std::time::Instant::now();
+    if let Some(last) = *guard {
+        if now.duration_since(last) < std::time::Duration::from_millis(400) {
+            return Ok(());
+        }
+    }
+    *guard = Some(now);
+
     if window.is_maximized().unwrap_or(false) {
         window.unmaximize().map_err(|error| error.to_string())
     } else {
@@ -149,6 +163,27 @@ fn exit_app(app: tauri::AppHandle) {
 
 #[tauri::command]
 fn start_dragging(window: tauri::Window) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+        use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN};
+
+        if let Ok(raw_hwnd) = window.hwnd() {
+            unsafe {
+                let _ = ReleaseCapture();
+                let hwnd = HWND(raw_hwnd.0 as _);
+                SendMessageW(
+                    hwnd,
+                    WM_NCLBUTTONDOWN,
+                    Some(WPARAM(HTCAPTION as usize)),
+                    Some(LPARAM(0)),
+                );
+                return Ok(());
+            }
+        }
+    }
+
     window.start_dragging().map_err(|error| error.to_string())
 }
 
@@ -284,6 +319,7 @@ fn set_retention_limit(state: tauri::State<'_, AppState>, limit: String) -> Resu
 
 #[tauri::command]
 fn copy_to_clipboard(text: String) -> Result<(), String> {
+    clipboard::mark_internal_copy_text(&text);
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     clipboard.set_text(text).map_err(|e| e.to_string())
 }
@@ -315,6 +351,9 @@ fn copy_image_to_clipboard(data_url: String) -> Result<(), String> {
     let height = img.height() as usize;
     let bytes = img.into_raw();
 
+    let sample_hash = image_clipboard::compute_bytes_hash(&bytes);
+    clipboard::mark_internal_copy_image(sample_hash);
+
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     clipboard
         .set_image(arboard::ImageData {
@@ -323,6 +362,15 @@ fn copy_image_to_clipboard(data_url: String) -> Result<(), String> {
             bytes: std::borrow::Cow::Owned(bytes),
         })
         .map_err(|e| e.to_string())
+}
+
+// ----------
+// Application Restart Command
+// Description: Restarts the Clipbox application process cleanly via Tauri AppHandle.
+// ----------
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    app.restart();
 }
 
 /// Run the Clipbox desktop application.
@@ -401,8 +449,27 @@ pub fn run() {
 
             let _tray = tray_builder.build(app)?;
 
-            // Initial window visibility based on start_minimized preference
+            // Initial window visibility and development connection error handling
             if let Some(window) = app.get_webview_window("main") {
+                #[cfg(debug_assertions)]
+                {
+                    use std::net::{SocketAddr, TcpStream};
+                    use std::time::Duration;
+
+                    let dev_addr: SocketAddr = "127.0.0.1:1420".parse().unwrap();
+                    let is_dev_running = TcpStream::connect_timeout(&dev_addr, Duration::from_millis(350)).is_ok();
+                    if !is_dev_running {
+                        use base64::engine::general_purpose::STANDARD;
+                        use base64::Engine;
+                        let html = include_str!("fallback_error.html");
+                        let b64 = STANDARD.encode(html.as_bytes());
+                        let data_url = format!("data:text/html;base64,{b64}");
+                        if let Ok(url) = data_url.parse() {
+                            let _ = window.navigate(url);
+                        }
+                    }
+                }
+
                 if !is_minimized {
                     let _ = window.show();
                     let _ = window.set_focus();
@@ -435,7 +502,8 @@ pub fn run() {
             get_database_path,
             open_database_directory,
             get_retention_limit,
-            set_retention_limit
+            set_retention_limit,
+            restart_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clipbox");

@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Clipbox - Dev Server Connection</title>
+    <style>
+      :root {
+        --bg: #09090b;
+        --card: #18181b;
+        --card-border: #27272a;
+        --text: #f4f4f5;
+        --text-muted: #a1a1aa;
+        --primary: #fafafa;
+        --primary-fg: #18181b;
+        --accent: #f59e0b;
+        --accent-bg: rgba(245, 158, 11, 0.12);
+        --accent-border: rgba(245, 158, 11, 0.25);
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        background-color: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+        height: 100vh;
+        width: 100vw;
+        display: flex;
+        flex-direction: column;
+        user-select: none;
+        overflow: hidden;
+      }
+
+      /* Native Frameless Titlebar */
+      .titlebar {
+        height: 36px;
+        background-color: var(--card);
+        border-bottom: 1px solid var(--card-border);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        -webkit-app-region: drag;
+        cursor: default;
+        flex-shrink: 0;
+      }
+
+      .titlebar-brand {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 12px;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: rgba(244, 244, 245, 0.9);
+      }
+
+      .titlebar-logo {
+        width: 18px;
+        height: 18px;
+        border-radius: 4px;
+        background: linear-gradient(135deg, #3b82f6, #6366f1);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        font-weight: 800;
+        color: white;
+      }
+
+      .titlebar-controls {
+        display: flex;
+        height: 100%;
+        -webkit-app-region: no-drag;
+      }
+
+      .titlebar-btn {
+        width: 44px;
+        height: 100%;
+        border: none;
+        background: transparent;
+        color: var(--text-muted);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+      }
+
+      .titlebar-btn:hover {
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--text);
+      }
+
+      .titlebar-btn.close:hover {
+        background: #dc2626;
+        color: white;
+      }
+
+      /* Centered Error Container */
+      .content {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+
+      .card {
+        background: var(--card);
+        border: 1px solid var(--card-border);
+        border-radius: 14px;
+        max-width: 460px;
+        width: 100%;
+        padding: 32px 28px;
+        text-align: center;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+      }
+
+      .icon-badge {
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        background: var(--accent-bg);
+        border: 1px solid var(--accent-border);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--accent);
+      }
+
+      .icon-badge svg {
+        width: 28px;
+        height: 28px;
+      }
+
+      h1 {
+        font-size: 18px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+
+      .reason-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--card-border);
+        border-radius: 6px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 11px;
+        color: var(--accent);
+      }
+
+      .description {
+        font-size: 13px;
+        color: var(--text-muted);
+        line-height: 1.5;
+      }
+
+      .help-box {
+        width: 100%;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid var(--card-border);
+        border-radius: 8px;
+        padding: 12px;
+        font-size: 12px;
+        text-align: left;
+        color: var(--text-muted);
+        line-height: 1.6;
+      }
+
+      .help-box code {
+        background: rgba(255, 255, 255, 0.08);
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-family: monospace;
+        color: var(--text);
+      }
+
+      .status-pill {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+
+      .pulse-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background-color: var(--accent);
+        animation: pulse 1.8s infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        50% {
+          opacity: 0.4;
+          transform: scale(0.85);
+        }
+      }
+
+      .actions {
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 4px;
+      }
+
+      .btn {
+        width: 100%;
+        height: 38px;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        transition: all 0.15s;
+        border: none;
+      }
+
+      .btn-primary {
+        background: var(--primary);
+        color: var(--primary-fg);
+      }
+
+      .btn-primary:hover {
+        background: #e4e4e7;
+      }
+
+      .btn-secondary {
+        background: transparent;
+        color: var(--text-muted);
+        border: 1px solid var(--card-border);
+      }
+
+      .btn-secondary:hover {
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--text);
+      }
+
+      .spinner {
+        display: none;
+        width: 14px;
+        height: 14px;
+        border: 2px solid rgba(0, 0, 0, 0.2);
+        border-top-color: currentColor;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+
+      .btn.loading .spinner {
+        display: inline-block;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Titlebar -->
+    <div class="titlebar" data-tauri-drag-region>
+      <div class="titlebar-brand" data-tauri-drag-region>
+        <div class="titlebar-logo">C</div>
+        <span>Clipbox</span>
+      </div>
+      <div class="titlebar-controls">
+        <button id="btn-minimize" class="titlebar-btn" title="Minimize">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5">
+            <line x1="2" y1="6" x2="10" y2="6"></line>
+          </svg>
+        </button>
+        <button id="btn-close" class="titlebar-btn close" title="Close">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5">
+            <line x1="2" y1="2" x2="10" y2="10"></line>
+            <line x1="10" y1="2" x2="2" y2="10"></line>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Centered Error Card -->
+    <div class="content">
+      <div class="card">
+        <div class="icon-badge">
+          <!-- Disconnected Cloud / Server Icon -->
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22.61 16.95A5 5 0 0 0 18 10h-1.26a8 8 0 0 0-7.05-6M5 5a8 8 0 0 0-4 7h1a5 5 0 0 0 9 3"></path>
+            <line x1="2" y1="2" x2="22" y2="22"></line>
+          </svg>
+        </div>
+
+        <h1>Cannot Connect to Development Server</h1>
+
+        <div class="reason-badge">
+          <span>ERR_CONNECTION_REFUSED • http://localhost:1420</span>
+        </div>
+
+        <p class="description">
+          Clipbox was launched in development mode, but the local Vite development server is not running or still starting up.
+        </p>
+
+        <div class="help-box">
+          • Start the dev server: <code>npm run dev</code> or <code>npm run tauri dev</code><br />
+          • Once Vite is ready, click <b>Retry Connection</b> below.
+        </div>
+
+        <div class="status-pill">
+          <div class="pulse-dot"></div>
+          <span id="status-text">Auto-checking for server every 2s...</span>
+        </div>
+
+        <div class="actions">
+          <button id="btn-retry" class="btn btn-primary">
+            <span class="spinner"></span>
+            <span class="btn-text">Retry Connection</span>
+          </button>
+          <button id="btn-restart" class="btn btn-secondary">
+            Restart Application
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const TARGET_URL = "http://localhost:1420";
+      const statusText = document.getElementById("status-text");
+      const retryBtn = document.getElementById("btn-retry");
+      const restartBtn = document.getElementById("btn-restart");
+      const minimizeBtn = document.getElementById("btn-minimize");
+      const closeBtn = document.getElementById("btn-close");
+
+      let isChecking = false;
+
+      // Check if Vite is responsive
+      async function probeServer() {
+        if (isChecking) return;
+        isChecking = true;
+        try {
+          // Send request with short timeout
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 1200);
+
+          await fetch(TARGET_URL, {
+            mode: "no-cors",
+            cache: "no-store",
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+
+          // Success! Redirect to dev server
+          statusText.textContent = "Server detected! Connecting...";
+          window.location.href = TARGET_URL;
+        } catch (err) {
+          // Still unreachable
+          isChecking = false;
+        }
+      }
+
+      // Manual retry
+      retryBtn.addEventListener("click", async () => {
+        retryBtn.classList.add("loading");
+        statusText.textContent = "Probing http://localhost:1420...";
+        await probeServer();
+        setTimeout(() => {
+          retryBtn.classList.remove("loading");
+          statusText.textContent = "Auto-checking for server every 2s...";
+        }, 800);
+      });
+
+      // Restart application
+      restartBtn.addEventListener("click", async () => {
+        try {
+          if (window.__TAURI_INTERNALS__) {
+            await window.__TAURI_INTERNALS__.invoke("restart_app");
+            return;
+          }
+        } catch (e) {
+          console.warn("Could not invoke restart_app", e);
+        }
+        window.location.reload();
+      });
+
+      // Window controls
+      minimizeBtn.addEventListener("click", async () => {
+        try {
+          if (window.__TAURI_INTERNALS__) {
+            await window.__TAURI_INTERNALS__.invoke("minimize_window");
+          }
+        } catch (e) {
+          console.warn(e);
+        }
+      });
+
+      closeBtn.addEventListener("click", async () => {
+        try {
+          if (window.__TAURI_INTERNALS__) {
+            await window.__TAURI_INTERNALS__.invoke("close_window");
+          }
+        } catch (e) {
+          console.warn(e);
+        }
+      });
+
+      // Auto-poll every 2 seconds
+      setInterval(probeServer, 2000);
+      // Also probe on initial load
+      setTimeout(probeServer, 600);
+    </script>
+  </body>
+</html>

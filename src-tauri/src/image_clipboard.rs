@@ -11,6 +11,7 @@ pub struct CapturedImage {
     pub data_url: String,
     pub dimensions: String,
     pub raw_bytes_sample_hash: u64,
+    pub is_copied_image: bool,
 }
 
 #[cfg(windows)]
@@ -38,6 +39,12 @@ pub fn read_clipboard_image() -> Option<CapturedImage> {
         }
         let _guard = ClipboardGuard;
 
+        // Browsers & rich apps place HTML format on the clipboard when a user
+        // right-clicks and chooses "Copy Image". Pure screenshots (Snipping Tool,
+        // PrintScreen, Win+Shift+S) do not place HTML format.
+        let html_format = RegisterClipboardFormatW(w!("HTML Format"));
+        let has_html = html_format != 0 && IsClipboardFormatAvailable(html_format).is_ok();
+
         // 1. Try registered "PNG" format first (used by many web browsers & modern apps)
         let png_format = RegisterClipboardFormatW(w!("PNG"));
         if png_format != 0 && IsClipboardFormatAvailable(png_format).is_ok() {
@@ -63,6 +70,7 @@ pub fn read_clipboard_image() -> Option<CapturedImage> {
                                     data_url,
                                     dimensions,
                                     raw_bytes_sample_hash,
+                                    is_copied_image: has_html,
                                 });
                             }
                         }
@@ -106,6 +114,7 @@ pub fn read_clipboard_image() -> Option<CapturedImage> {
                                         data_url,
                                         dimensions,
                                         raw_bytes_sample_hash,
+                                        is_copied_image: has_html,
                                     });
                                 }
                             }
@@ -138,11 +147,11 @@ pub fn read_clipboard_image() -> Option<CapturedImage> {
     let data_url = format!("data:image/png;base64,{b64}");
     let dimensions = format!("{}x{}", img.width, img.height);
     let raw_bytes_sample_hash = compute_bytes_hash(&img.bytes);
-
     Some(CapturedImage {
         data_url,
         dimensions,
         raw_bytes_sample_hash,
+        is_copied_image: false,
     })
 }
 

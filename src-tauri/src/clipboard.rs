@@ -4,6 +4,8 @@
 // ----------
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
@@ -15,6 +17,25 @@ use crate::image_clipboard;
 use crate::source;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+static LAST_INTERNAL_COPIED_TEXT: Mutex<Option<String>> = Mutex::new(None);
+static LAST_INTERNAL_COPIED_IMAGE_HASH: AtomicU64 = AtomicU64::new(0);
+
+// ----------
+// Internal Clipboard Copy Tracking
+// Description: Records content copied to the OS clipboard by Clipbox user actions (e.g. clicking the Copy button on an entry card) so the background monitor does not create duplicate entries in history, while ensuring external screenshots or copies taken while Clipbox is focused are always captured.
+// ----------
+
+pub fn mark_internal_copy_text(text: &str) {
+    let cleaned = clipbox_core::strip_leading_empty_lines(text).to_string();
+    if let Ok(mut guard) = LAST_INTERNAL_COPIED_TEXT.lock() {
+        *guard = Some(cleaned);
+    }
+}
+
+pub fn mark_internal_copy_image(hash: u64) {
+    LAST_INTERNAL_COPIED_IMAGE_HASH.store(hash, Ordering::SeqCst);
+}
 
 /// Start the background clipboard monitor.
 pub fn start(database_path: PathBuf, app: tauri::AppHandle) -> thread::JoinHandle<()> {
@@ -56,12 +77,35 @@ fn monitor(database_path: PathBuf, app: tauri::AppHandle) {
         // 1. Check for image content first using robust native Windows Win32 / CF_DIB / PNG
         if let Some(img) = image_clipboard::read_clipboard_image() {
             if previous_image_hash != Some(img.raw_bytes_sample_hash) {
-                let metadata = source::current();
-                let is_self = metadata.source_process.as_deref().is_some_and(|proc| {
-                    proc.eq_ignore_ascii_case("clipbox.exe")
-                });
+                // Check if this image was copied internally by Clipbox's Copy button
+                let is_internal_copy = LAST_INTERNAL_COPIED_IMAGE_HASH.swap(0, Ordering::SeqCst)
+                    == img.raw_bytes_sample_hash;
 
-                if !is_self {
+                if !is_internal_copy {
+                    let mut metadata = source::current();
+
+                    let is_known_screenshot_tool = metadata
+                        .source_process
+                        .as_deref()
+                        .is_some_and(|proc| {
+                            proc.eq_ignore_ascii_case("ScreenClippingHost.exe")
+                                || proc.eq_ignore_ascii_case("SnippingTool.exe")
+                                || proc.eq_ignore_ascii_case("ShellExperienceHost.exe")
+                                || proc.eq_ignore_ascii_case("clipbox.exe")
+                        });
+
+                    let is_screen_capture = !img.is_copied_image || is_known_screenshot_tool;
+
+                    if is_screen_capture {
+                        metadata.source_app = Some("Screen Capture".into());
+                        metadata.source_process = None;
+                        metadata.window_title = None;
+                        metadata.app_icon = None;
+                    } else {
+                        // User explicitly right-clicked "Copy Image" in an application (Brave, Discord, etc.)
+                        metadata.window_title = Some("Copied Image".into());
+                    }
+
                     match store.add_image_entry(&img.data_url, &img.dimensions, &metadata) {
                         Ok(id) => {
                             eprintln!("stored clipboard image entry {id}");
@@ -99,47 +143,52 @@ fn monitor(database_path: PathBuf, app: tauri::AppHandle) {
                 Ok(text) => {
                     let cleaned = clipbox_core::strip_leading_empty_lines(&text);
 
+                    let is_internal_copy = {
+                        let mut guard = LAST_INTERNAL_COPIED_TEXT
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        if guard.as_deref() == Some(cleaned) {
+                            *guard = None;
+                            true
+                        } else {
+                            false
+                        }
+                    };
+
                     let is_new_text = previous_text
                         .as_ref()
                         .is_some_and(|previous| previous != cleaned);
 
-                    if is_new_text && !cleaned.is_empty() {
+                    if !is_internal_copy && is_new_text && !cleaned.is_empty() {
                         let metadata = source::current();
-                        let is_self = metadata.source_process.as_deref().is_some_and(|proc| {
-                            proc.eq_ignore_ascii_case("clipbox.exe")
-                        });
-
-                        if !is_self {
-                            match store.add_entry(cleaned, &metadata) {
-                                Ok(id) => {
-                                    eprintln!("stored clipboard entry {id}");
-                                    let entry = crate::ClipboardEntry {
-                                        id,
-                                        content: cleaned.to_string(),
-                                        copied_at: std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_secs() as i64,
-                                        source_app: metadata.source_app,
-                                        source_process: metadata.source_process,
-                                        window_title: metadata.window_title,
-                                        app_icon: metadata.app_icon,
-                                        is_pinned: false,
-                                        entry_type: "text".into(),
-                                        image_data: None,
-                                        image_dimensions: None,
-                                    };
-                                    let _ = app.emit("clipboard://new-entry", entry);
-                                }
-                                Err(error) => eprintln!("could not store clipboard text: {error}"),
+                        match store.add_entry(cleaned, &metadata) {
+                            Ok(id) => {
+                                eprintln!("stored clipboard entry {id}");
+                                let entry = crate::ClipboardEntry {
+                                    id,
+                                    content: cleaned.to_string(),
+                                    copied_at: std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs() as i64,
+                                    source_app: metadata.source_app,
+                                    source_process: metadata.source_process,
+                                    window_title: metadata.window_title,
+                                    app_icon: metadata.app_icon,
+                                    is_pinned: false,
+                                    entry_type: "text".into(),
+                                    image_data: None,
+                                    image_dimensions: None,
+                                };
+                                let _ = app.emit("clipboard://new-entry", entry);
                             }
+                            Err(error) => eprintln!("could not store clipboard text: {error}"),
                         }
                     }
 
                     previous_text = Some(cleaned.to_string());
                     previous_image_hash = None;
                 }
-                Err(arboard::Error::ContentNotAvailable) => {}
                 Err(_transient_error) => {}
             }
         }
