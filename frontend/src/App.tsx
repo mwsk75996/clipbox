@@ -34,6 +34,14 @@ import { ImageLightbox } from "@/components/image-lightbox";
 import { FileEntryCard } from "@/components/file-entry-card";
 import { DeletedEntryCard } from "@/components/deleted-entry-card";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   Card,
@@ -54,6 +62,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -216,6 +225,8 @@ export default function App() {
   const [showDeleted, setShowDeleted] = React.useState(false);
   const [deletedEntries, setDeletedEntries] = React.useState<DeletedClipboardEntry[]>([]);
   const [trashRetention, setTrashRetention] = React.useState<string | null>(null);
+  const [closePromptOpen, setClosePromptOpen] = React.useState(false);
+  const [closeRemember, setCloseRemember] = React.useState(false);
   const [toasts, setToasts] = React.useState<AppToast[]>([]);
 
   // Keyboard shortcuts and privacy monitoring state
@@ -314,6 +325,7 @@ export default function App() {
     let unlistenNew: (() => void) | undefined;
     let unlistenBump: (() => void) | undefined;
     let unlistenPause: (() => void) | undefined;
+    let unlistenClose: (() => void) | undefined;
 
     const setupListener = async () => {
       try {
@@ -343,6 +355,11 @@ export default function App() {
           unlistenPause = await listen<boolean>("clipboard://monitoring-paused-changed", (event) => {
             setIsMonitoringPaused(event.payload);
           });
+
+          unlistenClose = await listen("window://close-requested", () => {
+            setCloseRemember(false);
+            setClosePromptOpen(true);
+          });
         }
       } catch (err) {
         console.warn("Could not register clipboard event listeners", err);
@@ -353,6 +370,7 @@ export default function App() {
       if (unlistenNew) unlistenNew();
       if (unlistenBump) unlistenBump();
       if (unlistenPause) unlistenPause();
+      if (unlistenClose) unlistenClose();
     };
   }, []);
 
@@ -620,6 +638,42 @@ export default function App() {
     fetchTrashRetention();
   };
 
+  // Titlebar close (and Alt+F4 in "ask" mode via the backend event): follow
+  // the stored close policy, prompting when no choice was remembered.
+  const requestClose = React.useCallback(async () => {
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        const behavior = await invoke<string>("get_close_behavior");
+        if (behavior === "hide") {
+          await invoke("hide_window");
+          return;
+        }
+        if (behavior === "quit") {
+          await invoke("exit_app");
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn("Could not read close behavior, prompting instead", err);
+    }
+    setCloseRemember(false);
+    setClosePromptOpen(true);
+  }, []);
+
+  const handleCloseChoice = async (choice: "hide" | "quit") => {
+    setClosePromptOpen(false);
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        if (closeRemember) {
+          await invoke("set_close_behavior", { behavior: choice });
+        }
+        await invoke(choice === "hide" ? "hide_window" : "exit_app");
+      }
+    } catch (err) {
+      console.error("Failed to apply close choice", err);
+    }
+  };
+
   // Reset keyboard focus when search or filters change
   React.useEffect(() => {
     setFocusedIndex(null);
@@ -844,7 +898,7 @@ export default function App() {
   return (
     <div className="h-screen w-screen bg-background text-foreground flex flex-col font-sans select-none overflow-hidden transition-colors duration-200">
       {/* Native Desktop Titlebar with Centered Entries Count */}
-      <Titlebar entriesCount={filteredEntries.length} />
+      <Titlebar entriesCount={filteredEntries.length} onCloseRequest={requestClose} />
 
       {/* Main App Container */}
       <div className="flex-1 flex flex-col overflow-hidden">
@@ -1448,6 +1502,37 @@ export default function App() {
         onClose={() => setPreviewEntry(null)}
         formatTimestamp={formatTimestamp}
       />
+
+      {/* Close behavior prompt (titlebar X, or Alt+F4 in "ask" mode) */}
+      <Dialog open={closePromptOpen} onOpenChange={setClosePromptOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Close Clipbox?</DialogTitle>
+            <DialogDescription>
+              Quit the app entirely, or hide it to the tray and keep monitoring your clipboard?
+            </DialogDescription>
+          </DialogHeader>
+          <label
+            htmlFor="close-remember"
+            className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none"
+          >
+            <Switch
+              id="close-remember"
+              checked={closeRemember}
+              onCheckedChange={setCloseRemember}
+            />
+            Remember my choice
+          </label>
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="outline" onClick={() => handleCloseChoice("hide")}>
+              Hide to tray
+            </Button>
+            <Button variant="destructive" onClick={() => handleCloseChoice("quit")}>
+              Quit Clipbox
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
