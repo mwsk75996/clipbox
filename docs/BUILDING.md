@@ -39,7 +39,7 @@ To build the desktop executable:
 npm run tauri build
 ```
 
-The current starter configuration builds the executable without creating installer bundles.
+On Windows this also produces an NSIS installer (`Clipbox_*_x64-setup.exe` under `src-tauri/target/release/bundle/nsis/`). Building the installer requires [NSIS 3](https://nsis.sourceforge.io/) on top of the regular prerequisites.
 
 ## Find the database
 
