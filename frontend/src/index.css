@@ -137,4 +137,10 @@
     -ms-overflow-style: none !important;
     scrollbar-width: none !important;
   }
+
+  /* Hide the native search-field clear button: the app has its own
+     clear affordances and the unstyled control clashes with the hint. */
+  input[type="search"]::-webkit-search-cancel-button {
+    display: none;
+  }
 }
