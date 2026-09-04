@@ -22,12 +22,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
 import type { ClipboardEntry } from "../App";
 import { ImageAnnotator } from "./image-editor/image-annotator";
+import { matchOcrBoxes, type OcrBox } from "@/lib/ocr";
 
 interface ImageLightboxProps {
   entry: ClipboardEntry | null;
   isOpen: boolean;
   onClose: () => void;
   formatTimestamp: (timestamp: number) => string;
+  searchQuery: string;
+  showHighlights: boolean;
 }
 
 export function ImageLightbox({
@@ -35,6 +38,8 @@ export function ImageLightbox({
   isOpen,
   onClose,
   formatTimestamp,
+  searchQuery,
+  showHighlights,
 }: ImageLightboxProps) {
   const [isEditing, setIsEditing] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
@@ -53,6 +58,13 @@ export function ImageLightbox({
 
   const prevEntryIdRef = React.useRef<number | undefined>(undefined);
   const prevIsOpenRef = React.useRef(false);
+
+  // OCR word boxes matching the current feed search, overlaid on the image.
+  // Memoized since renders happen on every zoom/pan frame.
+  const matchedBoxes = React.useMemo<OcrBox[]>(
+    () => (showHighlights ? matchOcrBoxes(entry?.ocrBoxes, searchQuery) : []),
+    [entry?.ocrBoxes, searchQuery, showHighlights]
+  );
 
   // Reset zoom, pan, and edit state ONLY when modal opens afresh or when switching to a different clip
   React.useEffect(() => {
@@ -458,7 +470,7 @@ export function ImageLightbox({
         >
           {/* Subtle Checkerboard backdrop for transparent PNG images */}
           <div
-            className="rounded-lg shadow-2xl overflow-hidden border border-border/40 bg-[radial-gradient(#27272a_1px,transparent_1px)] [background-size:16px_16px] bg-card/60"
+            className="relative rounded-lg shadow-2xl overflow-hidden border border-border/40 bg-[radial-gradient(#27272a_1px,transparent_1px)] [background-size:16px_16px] bg-card/60"
             style={{
               backgroundImage: `
                 linear-gradient(45deg, rgba(255,255,255,0.03) 25%, transparent 25%),
@@ -476,6 +488,22 @@ export function ImageLightbox({
               draggable={false}
               className="max-w-[calc(88vw)] max-h-[calc(68vh)] object-contain select-none pointer-events-none rounded-lg"
             />
+            {matchedBoxes.length > 0 && (
+              <div className="absolute inset-0 pointer-events-none">
+                {matchedBoxes.map((box, index) => (
+                  <div
+                    key={index}
+                    className="absolute bg-yellow-400/30 border border-yellow-400/70 rounded-[1px]"
+                    style={{
+                      left: `${box.x * 100}%`,
+                      top: `${box.y * 100}%`,
+                      width: `${box.w * 100}%`,
+                      height: `${box.h * 100}%`,
+                    }}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>

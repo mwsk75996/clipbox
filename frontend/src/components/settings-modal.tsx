@@ -150,6 +150,8 @@ interface SettingsModalProps {
   isMonitoringPaused?: boolean;
   onMonitoringPausedChange?: (paused: boolean) => void;
   onEntriesPerPageChange?: (perPage: string) => void;
+  showOcrHighlights?: boolean;
+  onOcrHighlightChange?: (show: boolean) => void;
 }
 
 export function SettingsModal({
@@ -159,6 +161,8 @@ export function SettingsModal({
   isMonitoringPaused: externalIsMonitoringPaused,
   onMonitoringPausedChange,
   onEntriesPerPageChange,
+  showOcrHighlights: externalShowOcrHighlights,
+  onOcrHighlightChange,
 }: SettingsModalProps) {
   const [open, setOpen] = React.useState(false);
   const [launchOnStartup, setLaunchOnStartup] = React.useState(() => {
@@ -194,6 +198,30 @@ export function SettingsModal({
     return localStorage.getItem("clipbox:deletedRetention") || "7days";
   });
   const [purgedNotice, setPurgedNotice] = React.useState<number | null>(null);
+  const [ocrStatus, setOcrStatus] = React.useState<{
+    available: boolean;
+    language: string;
+    languages: string[];
+    selected: string;
+  } | null>(null);
+  const [ocrLanguage, setOcrLanguage] = React.useState("auto");
+  const [installingOcr, setInstallingOcr] = React.useState(false);
+  const [highlightMatches, setHighlightMatches] = React.useState(() => {
+    const saved = localStorage.getItem("clipbox:ocrHighlights");
+    return saved !== null ? saved === "true" : (externalShowOcrHighlights ?? true);
+  });
+
+  React.useEffect(() => {
+    if (externalShowOcrHighlights !== undefined) {
+      setHighlightMatches(externalShowOcrHighlights);
+    }
+  }, [externalShowOcrHighlights]);
+
+  const handleToggleOcrHighlights = (checked: boolean) => {
+    setHighlightMatches(checked);
+    localStorage.setItem("clipbox:ocrHighlights", String(checked));
+    onOcrHighlightChange?.(checked);
+  };
   const [closeBehavior, setCloseBehavior] = React.useState(() => {
     return localStorage.getItem("clipbox:closeBehavior") || "ask";
   });
@@ -260,6 +288,19 @@ export function SettingsModal({
           setIgnorePasswordManagers(privacy.ignore_password_managers);
           setExcludedApps(privacy.excluded_applications || []);
           setDuplicateHandling(privacy.duplicate_handling || "bump");
+
+          try {
+            const ocr = await invoke<{
+              available: boolean;
+              language: string;
+              languages: string[];
+              selected: string;
+            }>("get_ocr_status");
+            setOcrStatus(ocr);
+            setOcrLanguage(ocr.selected || "auto");
+          } catch {
+            setOcrStatus({ available: false, language: "", languages: [], selected: "auto" });
+          }
 
           const shortcutData = await invoke<ShortcutSettings>("get_shortcut_settings");
           setShortcuts(shortcutData);
@@ -501,6 +542,57 @@ export function SettingsModal({
       }
     } catch (err) {
       console.error("Failed to update entries per page", err);
+    }
+  };
+
+  const handleOcrLanguageChange = async (value: string) => {
+    setOcrLanguage(value);
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("set_ocr_language", { language: value });
+        const ocr = await invoke<{
+          available: boolean;
+          language: string;
+          languages: string[];
+          selected: string;
+        }>("get_ocr_status");
+        setOcrStatus(ocr);
+        setOcrLanguage(ocr.selected || "auto");
+      }
+    } catch (err) {
+      console.error("Failed to update OCR language", err);
+    }
+  };
+
+  const handleInstallEnglishOcr = async () => {
+    if (installingOcr) return;
+    setInstallingOcr(true);
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("install_english_ocr");
+        const ocr = await invoke<{
+          available: boolean;
+          language: string;
+          languages: string[];
+          selected: string;
+        }>("get_ocr_status");
+        setOcrStatus(ocr);
+        setOcrLanguage(ocr.selected || "auto");
+      }
+    } catch (err) {
+      console.error("Failed to install English OCR support", err);
+    } finally {
+      setInstallingOcr(false);
+    }
+  };
+
+  const handleOpenLanguageSettings = async () => {
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("open_language_settings");
+      }
+    } catch (err) {
+      console.error("Failed to open language settings", err);
     }
   };
 
@@ -755,6 +847,107 @@ export function SettingsModal({
                     <SelectItem value="create_new">Record duplicate</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+
+              {/* Screenshot Text Search */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <label className="text-sm font-medium">Screenshot text search</label>
+                    <p className="text-xs text-muted-foreground">
+                      Recognize text in screenshots on this device so images become searchable. Nothing is uploaded.
+                    </p>
+                  </div>
+                  <span
+                    className={`inline-flex shrink-0 items-center px-2 py-0.5 rounded-full text-[11px] font-medium border ${
+                      ocrStatus === null
+                        ? "bg-muted text-muted-foreground"
+                        : ocrStatus.available
+                          ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+                          : "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
+                    }`}
+                  >
+                    {ocrStatus === null
+                      ? "Checking…"
+                      : ocrStatus.available
+                        ? `Available${ocrStatus.language ? ` · ${ocrStatus.language}` : ""}`
+                        : "Unavailable"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <label className="text-sm font-medium">Recognition language</label>
+                    <p className="text-xs text-muted-foreground">
+                      Which installed recognizer scans new screenshots.
+                    </p>
+                  </div>
+                  <Select
+                    value={ocrLanguage}
+                    onValueChange={handleOcrLanguageChange}
+                    disabled={installingOcr}
+                  >
+                    <SelectTrigger className="w-[150px] h-8 text-xs shrink-0">
+                      <SelectValue placeholder="Select language" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Auto</SelectItem>
+                      {(ocrStatus?.languages ?? []).map((tag) => (
+                        <SelectItem key={tag} value={tag}>
+                          {tag}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {ocrStatus !== null &&
+                !ocrStatus.languages.some((tag) => tag.toLowerCase().startsWith("en")) ? (
+                  <div className="flex items-center justify-between gap-4 rounded-md border border-amber-500/20 bg-amber-500/5 p-2.5">
+                    <p className="text-xs text-muted-foreground">
+                      English recognizer is not installed. Screenshots in English scan best with it
+                      (requires administrator approval).
+                    </p>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleOpenLanguageSettings}
+                      title="Open Windows language settings to add it manually"
+                      className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
+                    >
+                      Manual setup
+                    </button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleInstallEnglishOcr}
+                      disabled={installingOcr}
+                      title="Installs the English OCR capability (shows a UAC prompt)"
+                      className="h-8 text-xs gap-1.5 shrink-0"
+                    >
+                      {installingOcr ? "Installing…" : "Install English OCR"}
+                    </Button>
+                  </div>
+                  </div>
+                ) : null}
+
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <label
+                      htmlFor="ocr-highlight-toggle"
+                      className="text-sm font-medium cursor-pointer"
+                    >
+                      Highlight search matches
+                    </label>
+                    <p className="text-xs text-muted-foreground">
+                      Outline recognized words matching your search on images.
+                    </p>
+                  </div>
+                  <Switch
+                    id="ocr-highlight-toggle"
+                    checked={highlightMatches}
+                    onCheckedChange={handleToggleOcrHighlights}
+                  />
+                </div>
               </div>
 
               {/* Excluded Applications Manager */}

@@ -12,6 +12,7 @@ mod browser_url;
 mod clipboard;
 mod file_clipboard;
 mod image_clipboard;
+mod ocr;
 mod source;
 
 struct AppState {
@@ -34,6 +35,8 @@ pub struct ClipboardEntry {
     pub image_dimensions: Option<String>,
     pub files_data: Option<String>,
     pub source_url: Option<String>,
+    pub ocr_text: Option<String>,
+    pub ocr_boxes: Option<String>,
 }
 
 impl From<CoreClipboardEntry> for ClipboardEntry {
@@ -52,6 +55,8 @@ impl From<CoreClipboardEntry> for ClipboardEntry {
             image_dimensions: entry.image_dimensions,
             files_data: entry.files_data,
             source_url: entry.source_url,
+            ocr_text: entry.ocr_text,
+            ocr_boxes: entry.ocr_boxes,
         }
     }
 }
@@ -74,7 +79,6 @@ pub struct DeletedClipboardEntry {
     pub source_url: Option<String>,
     pub deleted_at: i64,
 }
-
 impl From<CoreDeletedEntry> for DeletedClipboardEntry {
     fn from(entry: CoreDeletedEntry) -> Self {
         Self {
@@ -626,6 +630,135 @@ fn set_entries_per_page(state: tauri::State<'_, AppState>, per_page: String) -> 
     store
         .set_setting("entries_per_page", &per_page)
         .map_err(|error| format!("could not save entries per page setting: {error}"))
+}
+
+// ----------
+// Image OCR Status Commands
+// Description: Reports on-device screenshot text-recognition availability and opens Windows language settings to install recognizer support.
+// ----------
+
+#[derive(serde::Serialize)]
+struct OcrStatus {
+    available: bool,
+    language: String,
+    languages: Vec<String>,
+    selected: String,
+}
+
+#[tauri::command]
+fn get_ocr_status(state: tauri::State<'_, AppState>) -> Result<OcrStatus, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    let stored = store
+        .get_setting("ocr_language")
+        .unwrap_or_default()
+        .unwrap_or_else(|| "auto".into());
+    // Normalize unknown values so the pill never describes a phantom engine.
+    let languages = ocr::available_languages();
+    let selected = if stored == "auto" || languages.iter().any(|tag| tag == &stored) {
+        stored
+    } else {
+        "auto".into()
+    };
+    let (available, language) = ocr::engine_status_for(&selected);
+    Ok(OcrStatus {
+        available,
+        language,
+        languages,
+        selected,
+    })
+}
+
+#[tauri::command]
+fn set_ocr_language(state: tauri::State<'_, AppState>, language: String) -> Result<(), String> {
+    if language.trim().is_empty() {
+        return Err("empty OCR language".into());
+    }
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    store
+        .set_setting("ocr_language", &language)
+        .map_err(|error| format!("could not save OCR language setting: {error}"))
+}
+
+/// English OCR capability for DISM Features on Demand.
+#[cfg(windows)]
+const ENGLISH_OCR_CAPABILITY: &str = "Language.OCR~~~en-US~0.0.1.0";
+
+#[tauri::command]
+async fn install_english_ocr() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        if ocr::available_languages()
+            .iter()
+            .any(|tag| tag.starts_with("en"))
+        {
+            return Ok(true);
+        }
+
+        // Elevated DISM install (shows a UAC prompt); declining surfaces as a
+        // launch failure below, and everything blocking runs off-executor.
+        tauri::async_runtime::spawn_blocking(|| {
+            use std::os::windows::process::CommandExt;
+            let installed = std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    &format!(
+                        "Start-Process -FilePath \"$env:SystemRoot\\System32\\Dism.exe\" -ArgumentList @('/Online', '/NoRestart', '/Add-Capability', '/CapabilityName:{ENGLISH_OCR_CAPABILITY}') -Verb RunAs -Wait"
+                    ),
+                ])
+                .creation_flags(0x08000000)
+                .output()
+                .map_err(|error| format!("could not launch capability installer: {error}"))?;
+            if !installed.status.success() {
+                let detail = String::from_utf8_lossy(&installed.stderr);
+                return Err(format!("capability installer failed: {}", detail.trim()));
+            }
+            // Trust re-detection, not exit codes: poll for the recognizer.
+            for _ in 0..60 {
+                if ocr::available_languages()
+                    .iter()
+                    .any(|tag| tag.starts_with("en"))
+                {
+                    return Ok(true);
+                }
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+            Ok(false)
+        })
+        .await
+        .map_err(|error| format!("installer task failed: {error}"))?
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err("OCR language install is currently supported on Windows".into())
+    }
+}
+
+#[tauri::command]
+fn open_language_settings() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows::core::w;
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+        let result =
+            unsafe { ShellExecuteW(None, w!("open"), w!("ms-settings:regionlanguage"), None, None, SW_SHOW) };
+        if result.0 as usize > 32 {
+            Ok(())
+        } else {
+            Err("could not open Windows language settings".into())
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err("language settings shortcut is currently supported on Windows".into())
+    }
 }
 
 // ----------
@@ -1722,6 +1855,9 @@ pub fn run() {
             let app_handle = app.handle();
             refresh_global_toggle_shortcut(app_handle, &database_path);
 
+            // Scan pre-existing unscanned screenshots in the background.
+            ocr::backfill_missing(database_path.clone());
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1765,6 +1901,10 @@ pub fn run() {
             set_close_behavior,
             get_entries_per_page,
             set_entries_per_page,
+            get_ocr_status,
+            set_ocr_language,
+            install_english_ocr,
+            open_language_settings,
             get_app_version,
             download_update,
             install_update,

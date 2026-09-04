@@ -21,7 +21,6 @@ import {
   Pin,
   Image as ImageIcon,
   Camera,
-  ZoomIn,
   Files,
   PauseCircle,
   ExternalLink,
@@ -36,6 +35,7 @@ import type { DateRange } from "react-day-picker";
 import { Titlebar } from "@/components/titlebar";
 import { ImageLightbox } from "@/components/image-lightbox";
 import { FileEntryCard } from "@/components/file-entry-card";
+import { FeedImageThumb } from "@/components/feed-image-thumb";
 import { DeletedEntryCard } from "@/components/deleted-entry-card";
 import { Button } from "@/components/ui/button";
 import {
@@ -91,6 +91,8 @@ export interface ClipboardEntry {
   imageDimensions?: string | null;
   filesData?: string | null;
   sourceUrl?: string | null;
+  ocrText?: string | null;
+  ocrBoxes?: string | null;
 }
 
 export interface DeletedClipboardEntry {
@@ -246,6 +248,9 @@ export default function App() {
   const [isFilterOpen, setIsFilterOpen] = React.useState(false);
   const [previewEntry, setPreviewEntry] = React.useState<ClipboardEntry | null>(null);
   const [showDeleted, setShowDeleted] = React.useState(false);
+  const [showOcrHighlights, setShowOcrHighlights] = React.useState(() => {
+    return localStorage.getItem("clipbox:ocrHighlights") !== "false";
+  });
   const [deletedEntries, setDeletedEntries] = React.useState<DeletedClipboardEntry[]>([]);
   const [entriesPerPage, setEntriesPerPage] = React.useState("25");
   const [page, setPage] = React.useState(1);
@@ -457,6 +462,7 @@ export default function App() {
           entry.windowTitle,
           entry.sourceUrl,
           effectiveUrl,
+          entry.ocrText,
         ].some((val) => val?.toLowerCase().includes(query));
 
       const matchesApp =
@@ -1248,6 +1254,11 @@ export default function App() {
                 setFocusedIndex(null);
                 scrollFeedToTop();
               }}
+              showOcrHighlights={showOcrHighlights}
+              onOcrHighlightChange={(value) => {
+                setShowOcrHighlights(value);
+                localStorage.setItem("clipbox:ocrHighlights", String(value));
+              }}
             />
           </div>
         </header>
@@ -1576,28 +1587,15 @@ export default function App() {
                             isCopiedPaths={copiedPathId === entry.id}
                           />
                         ) : entry.entryType === "image" && entry.imageData ? (
-                          <div>
-                            <div
-                              className="relative group overflow-hidden rounded-md border bg-muted/20 max-h-[300px] flex items-center justify-center p-1.5 cursor-zoom-in transition-all hover:border-primary/40 hover:bg-muted/30"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setPreviewEntry(entry);
-                              }}
-                              title="Click to view full-size image"
-                            >
-                              <img
-                                src={entry.imageData}
-                                alt={entry.content}
-                                className="max-h-[280px] w-auto max-w-full object-contain rounded select-none transition-transform duration-200 group-hover:scale-[1.015]"
-                                loading="lazy"
-                              />
-                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100 pointer-events-none">
-                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-black/75 text-white text-xs font-medium backdrop-blur-sm shadow-md">
-                                  <ZoomIn className="size-3.5" />
-                                  Preview
-                                </span>
-                              </div>
-                            </div>
+                          <>
+                          <FeedImageThumb
+                            imageData={entry.imageData}
+                            alt={entry.content}
+                            boxesJson={entry.ocrBoxes}
+                            searchQuery={searchQuery}
+                            showHighlights={showOcrHighlights}
+                            onPreview={() => setPreviewEntry(entry)}
+                          />
                             {entry.imageDimensions && (
                               <div className="flex items-center justify-between mt-2 text-[11px] text-muted-foreground font-mono">
                                 <div className="flex items-center gap-1.5">
@@ -1616,7 +1614,7 @@ export default function App() {
                                 </button>
                               </div>
                             )}
-                          </div>
+                          </>
                         ) : (
                           <>
                             <div
@@ -1781,6 +1779,8 @@ export default function App() {
         isOpen={previewEntry !== null}
         onClose={() => setPreviewEntry(null)}
         formatTimestamp={formatTimestamp}
+        searchQuery={searchQuery}
+        showHighlights={showOcrHighlights}
       />
 
       {/* Close behavior prompt (titlebar X, or Alt+F4 in "ask" mode) */}
