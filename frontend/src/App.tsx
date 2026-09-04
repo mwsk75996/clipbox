@@ -684,10 +684,10 @@ export default function App() {
   };
 
   const scrollFeedToTop = () => {
-    const viewport = feedScrollRef.current?.querySelector("[data-radix-scroll-area-viewport]");
-    if (viewport) {
-      viewport.scrollTop = 0;
-    }
+    // Project ScrollArea is a plain overflow div (not Radix): scroll it
+    // directly. "instant" overrides the scroll-smooth class so page turns
+    // snap instead of gliding over the swapped content.
+    feedScrollRef.current?.scrollTo({ top: 0, behavior: "instant" });
   };
 
   const clearFilters = () => {
