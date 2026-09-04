@@ -15,6 +15,8 @@ import {
   RotateCcw,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
   Trash2,
   Pin,
   Image as ImageIcon,
@@ -245,6 +247,8 @@ export default function App() {
   const [previewEntry, setPreviewEntry] = React.useState<ClipboardEntry | null>(null);
   const [showDeleted, setShowDeleted] = React.useState(false);
   const [deletedEntries, setDeletedEntries] = React.useState<DeletedClipboardEntry[]>([]);
+  const [entriesPerPage, setEntriesPerPage] = React.useState("25");
+  const [page, setPage] = React.useState(1);
   const [trashRetention, setTrashRetention] = React.useState<string | null>(null);
   const [closePromptOpen, setClosePromptOpen] = React.useState(false);
   const [closeRemember, setCloseRemember] = React.useState(false);
@@ -483,6 +487,16 @@ export default function App() {
     });
   }, [entries, searchQuery, selectedApp, selectedType, dateRange]);
 
+  // Feed pagination: slice the filtered feed into pages. The page is clamped
+  // inline so a shrinking list never renders an empty page for a frame.
+  const perPage = Math.max(1, parseInt(entriesPerPage, 10) || 25);
+  const totalPages = Math.max(1, Math.ceil(filteredEntries.length / perPage));
+  const safePage = Math.min(Math.max(page, 1), totalPages);
+  const paginatedEntries = React.useMemo(() => {
+    const start = (safePage - 1) * perPage;
+    return filteredEntries.slice(start, start + perPage);
+  }, [filteredEntries, safePage, perPage]);
+
   // Toggle pinned status of an entry
   const handleTogglePin = async (id: number, event?: React.MouseEvent) => {
     event?.stopPropagation();
@@ -674,6 +688,7 @@ export default function App() {
     setSearchQuery("");
     setDateRange(undefined);
     setIsFilterOpen(false);
+    setPage(1);
   };
 
   const enterDeletedView = () => {
@@ -807,6 +822,19 @@ export default function App() {
     };
   }, []);
 
+  // Load the persisted entries-per-page preference once.
+  React.useEffect(() => {
+    (async () => {
+      try {
+        if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+          setEntriesPerPage(await invoke<string>("get_entries_per_page"));
+        }
+      } catch (err) {
+        console.warn("Could not read entries per page", err);
+      }
+    })();
+  }, []);
+
   React.useEffect(() => {
     if (!appVersion || autoCheckedRef.current) return;
     autoCheckedRef.current = true;
@@ -816,9 +844,10 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [appVersion, checkForUpdates]);
 
-  // Reset keyboard focus when search or filters change
+  // Reset keyboard focus and page when search or filters change
   React.useEffect(() => {
     setFocusedIndex(null);
+    setPage(1);
   }, [searchQuery, selectedApp, selectedType, dateRange]);
 
   // Auto-scroll focused card into view smoothly
@@ -889,10 +918,10 @@ export default function App() {
       if (matchesBinding(event, shortcuts.nav_down) && !showDeleted) {
         event.preventDefault();
         lastKeyboardNavTimeRef.current = Date.now();
-        if (filteredEntries.length === 0) return;
+        if (paginatedEntries.length === 0) return;
         setFocusedIndex((prev) => {
           if (prev === null) return 0;
-          return Math.min(prev + 1, filteredEntries.length - 1);
+          return Math.min(prev + 1, paginatedEntries.length - 1);
         });
         return;
       }
@@ -911,18 +940,28 @@ export default function App() {
         return;
       }
 
-      // Configurable Copy focused entry shortcut (active feed only)
-      if (matchesBinding(event, shortcuts.copy_entry) && !showDeleted && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      // Page navigation with arrow keys (active feed only, never while typing)
+      if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && !showDeleted) {
         event.preventDefault();
-        const targetEntry = filteredEntries[focusedIndex];
+        setFocusedIndex(null);
+        setPage((prev) =>
+          Math.min(Math.max(prev + (event.key === "ArrowRight" ? 1 : -1), 1), totalPages)
+        );
+        return;
+      }
+
+      // Configurable Copy focused entry shortcut (active feed only)
+      if (matchesBinding(event, shortcuts.copy_entry) && !showDeleted && focusedIndex !== null && paginatedEntries[focusedIndex]) {
+        event.preventDefault();
+        const targetEntry = paginatedEntries[focusedIndex];
         handleCopy(targetEntry);
         return;
       }
 
       // Configurable Expand / collapse preview shortcut (active feed only)
-      if (matchesBinding(event, shortcuts.expand_preview) && !showDeleted && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      if (matchesBinding(event, shortcuts.expand_preview) && !showDeleted && focusedIndex !== null && paginatedEntries[focusedIndex]) {
         event.preventDefault();
-        const targetEntry = filteredEntries[focusedIndex];
+        const targetEntry = paginatedEntries[focusedIndex];
         const content = stripLeadingEmptyLines(targetEntry.content);
         const lines = content.split(/\r?\n/);
         const isExpandable = lines.length > 1 || content.length > 90;
@@ -933,20 +972,20 @@ export default function App() {
       }
 
       // Configurable Delete focused entry shortcut (active feed only)
-      if (matchesBinding(event, shortcuts.delete_entry) && !showDeleted && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      if (matchesBinding(event, shortcuts.delete_entry) && !showDeleted && focusedIndex !== null && paginatedEntries[focusedIndex]) {
         event.preventDefault();
-        const targetEntry = filteredEntries[focusedIndex];
+        const targetEntry = paginatedEntries[focusedIndex];
         handleDelete(targetEntry.id);
-        if (focusedIndex >= filteredEntries.length - 1) {
-          setFocusedIndex(Math.max(0, filteredEntries.length - 2));
+        if (focusedIndex >= paginatedEntries.length - 1) {
+          setFocusedIndex(Math.max(0, paginatedEntries.length - 2));
         }
         return;
       }
 
       // Configurable Toggle Pin shortcut (active feed only)
-      if (matchesBinding(event, shortcuts.toggle_pin) && !showDeleted && focusedIndex !== null && filteredEntries[focusedIndex]) {
+      if (matchesBinding(event, shortcuts.toggle_pin) && !showDeleted && focusedIndex !== null && paginatedEntries[focusedIndex]) {
         event.preventDefault();
-        const targetEntry = filteredEntries[focusedIndex];
+        const targetEntry = paginatedEntries[focusedIndex];
         handleTogglePin(targetEntry.id);
         return;
       }
@@ -1011,7 +1050,7 @@ export default function App() {
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("pointerdown", handlePointerDown);
     };
-  }, [filteredEntries, focusedIndex, previewEntry, searchQuery, hasActiveFilters, shortcuts, showDeleted]);
+  }, [filteredEntries, paginatedEntries, totalPages, focusedIndex, previewEntry, searchQuery, hasActiveFilters, shortcuts, showDeleted]);
 
   // Handle card expansion while preventing collapse when selecting/marking text
   const handleCardClick = (
@@ -1056,7 +1095,7 @@ export default function App() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "ArrowDown" && !showDeleted && filteredEntries.length > 0) {
+                  if (e.key === "ArrowDown" && !showDeleted && paginatedEntries.length > 0) {
                     e.preventDefault();
                     searchInputRef.current?.blur();
                     setFocusedIndex(0);
@@ -1188,12 +1227,18 @@ export default function App() {
               onClearHistory={() => {
                 inFlightDeletionsRef.current.clear();
                 setEntries([]);
+                setPage(1);
                 fetchDeletedEntries();
               }}
               shortcuts={shortcuts}
               onShortcutsChange={setShortcuts}
               isMonitoringPaused={isMonitoringPaused}
               onMonitoringPausedChange={setIsMonitoringPaused}
+              onEntriesPerPageChange={(value) => {
+                setEntriesPerPage(value);
+                setPage(1);
+                setFocusedIndex(null);
+              }}
             />
           </div>
         </header>
@@ -1301,7 +1346,7 @@ export default function App() {
             <div className="relative flex-1 w-full min-h-0 flex flex-col overflow-hidden">
               <ScrollArea className="flex-1 w-full h-full">
                 <div className="max-w-4xl w-full mx-auto px-6 pt-5 pb-20 space-y-3">
-                {filteredEntries.map((entry, index) => {
+                {paginatedEntries.map((entry, index) => {
                   const content = stripLeadingEmptyLines(entry.content);
                   const lines = content.split(/\r?\n/);
                   const isExpandable = lines.length > 1 || content.length > 90;
@@ -1640,8 +1685,45 @@ export default function App() {
 
       {/* Bottom status footer */}
       <footer className="border-t bg-card/60 backdrop-blur px-6 py-1.5 shrink-0">
-        <div className="max-w-4xl mx-auto flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-          <span className="select-none">{appVersion ? `v${appVersion}` : ""}</span>
+        <div className="max-w-4xl mx-auto grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-[11px] text-muted-foreground">
+          <span className="select-none justify-self-start">{appVersion ? `v${appVersion}` : ""}</span>
+          {!showDeleted && (
+            <div className="flex items-center gap-1.5 justify-self-center">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  setFocusedIndex(null);
+                  setPage((prev) => Math.max(prev - 1, 1));
+                }}
+                disabled={safePage <= 1}
+                className="size-7 rounded-md"
+                title="Previous page (Arrow Left)"
+              >
+                <ChevronLeft className="size-3.5" />
+              </Button>
+              <span
+                className="size-7 rounded-full border bg-muted flex items-center justify-center text-xs leading-none font-medium text-foreground select-none"
+                title={`Page ${safePage} of ${totalPages}`}
+              >
+                {safePage}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  setFocusedIndex(null);
+                  setPage((prev) => Math.min(prev + 1, totalPages));
+                }}
+                disabled={safePage >= totalPages}
+                className="size-7 rounded-md"
+                title="Next page (Arrow Right)"
+              >
+                <ChevronRight className="size-3.5" />
+              </Button>
+            </div>
+          )}
+          <div className="justify-self-end">
           {appVersion && updateStatus.phase === "ready" ? (
             <Button
               size="sm"
@@ -1679,6 +1761,7 @@ export default function App() {
               </span>
             </Button>
           ) : null}
+          </div>
         </div>
       </footer>
 

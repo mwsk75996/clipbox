@@ -146,6 +146,7 @@ interface SettingsModalProps {
   onShortcutsChange?: (shortcuts: ShortcutSettings) => void;
   isMonitoringPaused?: boolean;
   onMonitoringPausedChange?: (paused: boolean) => void;
+  onEntriesPerPageChange?: (perPage: string) => void;
 }
 
 export function SettingsModal({
@@ -154,6 +155,7 @@ export function SettingsModal({
   onShortcutsChange,
   isMonitoringPaused: externalIsMonitoringPaused,
   onMonitoringPausedChange,
+  onEntriesPerPageChange,
 }: SettingsModalProps) {
   const [open, setOpen] = React.useState(false);
   const [launchOnStartup, setLaunchOnStartup] = React.useState(() => {
@@ -191,6 +193,9 @@ export function SettingsModal({
   const [purgedNotice, setPurgedNotice] = React.useState<number | null>(null);
   const [closeBehavior, setCloseBehavior] = React.useState(() => {
     return localStorage.getItem("clipbox:closeBehavior") || "ask";
+  });
+  const [entriesPerPage, setEntriesPerPage] = React.useState(() => {
+    return localStorage.getItem("clipbox:entriesPerPage") || "25";
   });
 
   const [confirmClear, setConfirmClear] = React.useState(false);
@@ -242,6 +247,10 @@ export function SettingsModal({
           const realCloseBehavior = await invoke<string>("get_close_behavior");
           setCloseBehavior(realCloseBehavior);
           localStorage.setItem("clipbox:closeBehavior", realCloseBehavior);
+
+          const realPerPage = await invoke<string>("get_entries_per_page");
+          setEntriesPerPage(realPerPage);
+          localStorage.setItem("clipbox:entriesPerPage", realPerPage);
 
           const privacy = await invoke<PrivacySettings>("get_privacy_settings");
           setMonitoringPaused(privacy.monitoring_paused);
@@ -456,6 +465,19 @@ export function SettingsModal({
     }
   };
 
+  const handleEntriesPerPageChange = async (value: string) => {
+    setEntriesPerPage(value);
+    localStorage.setItem("clipbox:entriesPerPage", value);
+    onEntriesPerPageChange?.(value);
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("set_entries_per_page", { perPage: value });
+      }
+    } catch (err) {
+      console.error("Failed to update entries per page", err);
+    }
+  };
+
   const handleCopyPath = () => {
     navigator.clipboard.writeText(dbPath);
     setCopiedPath(true);
@@ -598,6 +620,29 @@ export function SettingsModal({
                     <SelectItem value="ask">Ask every time</SelectItem>
                     <SelectItem value="hide">Hide to tray</SelectItem>
                     <SelectItem value="quit">Quit app</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-0.5">
+                  <label className="text-sm font-medium">Entries per page</label>
+                  <p className="text-xs text-muted-foreground">
+                    How many history entries each feed page shows.
+                  </p>
+                </div>
+                <Select
+                  value={entriesPerPage}
+                  onValueChange={handleEntriesPerPageChange}
+                >
+                  <SelectTrigger className="w-[150px] h-8 text-xs shrink-0">
+                    <SelectValue placeholder="Select count" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="10">10 entries</SelectItem>
+                    <SelectItem value="25">25 entries</SelectItem>
+                    <SelectItem value="50">50 entries</SelectItem>
+                    <SelectItem value="100">100 entries</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
