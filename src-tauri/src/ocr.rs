@@ -60,7 +60,7 @@ fn scan_entry_blocking(database_path: &Path, entry_id: i64) -> Result<(), String
         return Ok(());
     };
 
-    let text = recognize_data_url(&data_url)?;
+    let text = recognize_data_url(&data_url, &preferred_language(&store))?;
     store
         .set_ocr_text(entry_id, &text)
         .map_err(|error| error.to_string())?;
@@ -83,9 +83,65 @@ pub fn engine_status() -> (bool, String) {
     }
 }
 
+/// Tags of installed OCR recognizer languages (e.g. "da-DK", "en-US").
 #[cfg(windows)]
-fn ocr_engine() -> Result<(windows::Media::Ocr::OcrEngine, String), String> {
+pub fn available_languages() -> Vec<String> {
+    use windows::Media::Ocr::OcrEngine;
+
+    let Ok(languages) = OcrEngine::AvailableRecognizerLanguages() else {
+        return Vec::new();
+    };
+    let Ok(count) = languages.Size() else {
+        return Vec::new();
+    };
+    let mut tags = Vec::new();
+    for i in 0..count {
+        if let Ok(language) = languages.GetAt(i) {
+            if let Ok(tag) = language.LanguageTag() {
+                tags.push(tag.to_string());
+            }
+        }
+    }
+    tags.sort();
+    tags
+}
+
+#[cfg(not(windows))]
+pub fn available_languages() -> Vec<String> {
+    Vec::new()
+}
+
+/// Stored recognition language preference ("auto" = user profile, English fallback).
+fn preferred_language(store: &ClipboardStore) -> String {
+    store
+        .get_setting("ocr_language")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "auto".into())
+}
+
+/// Engine for an explicit language preference, falling back to the
+/// automatic chain when unset ("auto") or unavailable.
+#[cfg(windows)]
+fn ocr_engine_preferred(
+    preferred: &str,
+) -> Result<(windows::Media::Ocr::OcrEngine, String), String> {
     use windows::Globalization::Language;
+    use windows::Media::Ocr::OcrEngine;
+
+    if preferred != "auto" {
+        if let Ok(language) = Language::CreateLanguage(&windows::core::HSTRING::from(preferred))
+        {
+            if let Ok(engine) = OcrEngine::TryCreateFromLanguage(&language) {
+                return Ok((engine, preferred.into()));
+            }
+        }
+    }
+    ocr_engine()
+}
+
+#[cfg(windows)]
+fn ocr_engine() -> Result<(windows::Media::Ocr::OcrEngine, String), String> {    use windows::Globalization::Language;
     use windows::Media::Ocr::OcrEngine;
 
     if let Ok(engine) = OcrEngine::TryCreateFromUserProfileLanguages() {
@@ -105,7 +161,7 @@ fn ocr_engine() -> Result<(windows::Media::Ocr::OcrEngine, String), String> {
 }
 
 #[cfg(windows)]
-fn recognize_data_url(data_url: &str) -> Result<String, String> {
+fn recognize_data_url(data_url: &str, preferred: &str) -> Result<String, String> {
     use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
 
     let base64_str = data_url.split(',').next_back().unwrap_or(data_url);
@@ -157,7 +213,7 @@ fn recognize_data_url(data_url: &str) -> Result<String, String> {
     )
     .map_err(|error| format!("failed to prepare image for OCR: {error}"))?;
 
-    let (engine, _) = ocr_engine()?;
+    let (engine, _) = ocr_engine_preferred(preferred)?;
     let operation = engine
         .RecognizeAsync(&bitmap)
         .map_err(|error| format!("failed to start text recognition: {error}"))?;
@@ -231,6 +287,6 @@ fn recognize_data_url(data_url: &str) -> Result<String, String> {
 }
 
 #[cfg(not(windows))]
-fn recognize_data_url(_data_url: &str) -> Result<String, String> {
+fn recognize_data_url(_data_url: &str, _preferred: &str) -> Result<String, String> {
     Err("image text recognition is currently supported on Windows".into())
 }

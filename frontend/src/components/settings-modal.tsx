@@ -194,7 +194,14 @@ export function SettingsModal({
     return localStorage.getItem("clipbox:deletedRetention") || "7days";
   });
   const [purgedNotice, setPurgedNotice] = React.useState<number | null>(null);
-  const [ocrStatus, setOcrStatus] = React.useState<{ available: boolean; language: string } | null>(null);
+  const [ocrStatus, setOcrStatus] = React.useState<{
+    available: boolean;
+    language: string;
+    languages: string[];
+    selected: string;
+  } | null>(null);
+  const [ocrLanguage, setOcrLanguage] = React.useState("auto");
+  const [installingOcr, setInstallingOcr] = React.useState(false);
   const [closeBehavior, setCloseBehavior] = React.useState(() => {
     return localStorage.getItem("clipbox:closeBehavior") || "ask";
   });
@@ -263,10 +270,16 @@ export function SettingsModal({
           setDuplicateHandling(privacy.duplicate_handling || "bump");
 
           try {
-            const ocr = await invoke<{ available: boolean; language: string }>("get_ocr_status");
+            const ocr = await invoke<{
+              available: boolean;
+              language: string;
+              languages: string[];
+              selected: string;
+            }>("get_ocr_status");
             setOcrStatus(ocr);
+            setOcrLanguage(ocr.selected || "auto");
           } catch {
-            setOcrStatus({ available: false, language: "" });
+            setOcrStatus({ available: false, language: "", languages: [], selected: "auto" });
           }
 
           const shortcutData = await invoke<ShortcutSettings>("get_shortcut_settings");
@@ -509,6 +522,39 @@ export function SettingsModal({
       }
     } catch (err) {
       console.error("Failed to update entries per page", err);
+    }
+  };
+
+  const handleOcrLanguageChange = async (value: string) => {
+    setOcrLanguage(value);
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("set_ocr_language", { language: value });
+      }
+    } catch (err) {
+      console.error("Failed to update OCR language", err);
+    }
+  };
+
+  const handleInstallEnglishOcr = async () => {
+    if (installingOcr) return;
+    setInstallingOcr(true);
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("install_english_ocr");
+        const ocr = await invoke<{
+          available: boolean;
+          language: string;
+          languages: string[];
+          selected: string;
+        }>("get_ocr_status");
+        setOcrStatus(ocr);
+        setOcrLanguage(ocr.selected || "auto");
+      }
+    } catch (err) {
+      console.error("Failed to install English OCR support", err);
+    } finally {
+      setInstallingOcr(false);
     }
   };
 
@@ -776,39 +822,84 @@ export function SettingsModal({
               </div>
 
               {/* Screenshot Text Search */}
-              <div className="flex items-center justify-between gap-4">
-                <div className="space-y-0.5">
-                  <label className="text-sm font-medium">Screenshot text search</label>
-                  <p className="text-xs text-muted-foreground">
-                    Recognize text in screenshots on this device so images become searchable. Nothing is uploaded.
-                  </p>
-                  <p
-                    className={`text-xs ${
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <label className="text-sm font-medium">Screenshot text search</label>
+                    <p className="text-xs text-muted-foreground">
+                      Recognize text in screenshots on this device so images become searchable. Nothing is uploaded.
+                    </p>
+                  </div>
+                  <span
+                    className={`inline-flex shrink-0 items-center px-2 py-0.5 rounded-full text-[11px] font-medium border ${
                       ocrStatus === null
-                        ? "text-muted-foreground"
+                        ? "bg-muted text-muted-foreground"
                         : ocrStatus.available
-                          ? "text-emerald-600 dark:text-emerald-400"
-                          : "text-amber-600 dark:text-amber-400"
+                          ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+                          : "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
                     }`}
                   >
                     {ocrStatus === null
-                      ? "Checking support..."
+                      ? "Checking…"
                       : ocrStatus.available
-                        ? `Available${ocrStatus.language ? ` (${ocrStatus.language})` : ""}`
-                        : "Recognizer components are not installed."}
-                  </p>
+                        ? `Available${ocrStatus.language ? ` · ${ocrStatus.language}` : ""}`
+                        : "Unavailable"}
+                  </span>
                 </div>
-                {ocrStatus !== null && !ocrStatus.available ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handleOpenLanguageSettings}
-                    title="Opens Windows language settings to add OCR support"
-                    className="h-8 text-xs gap-1.5 shrink-0"
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <label className="text-sm font-medium">Recognition language</label>
+                    <p className="text-xs text-muted-foreground">
+                      Which installed recognizer scans new screenshots.
+                    </p>
+                  </div>
+                  <Select
+                    value={ocrLanguage}
+                    onValueChange={handleOcrLanguageChange}
+                    disabled={installingOcr}
                   >
-                    Install support
-                  </Button>
+                    <SelectTrigger className="w-[150px] h-8 text-xs shrink-0">
+                      <SelectValue placeholder="Select language" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Auto</SelectItem>
+                      {(ocrStatus?.languages ?? []).map((tag) => (
+                        <SelectItem key={tag} value={tag}>
+                          {tag}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {ocrStatus !== null &&
+                !ocrStatus.languages.some((tag) => tag.toLowerCase().startsWith("en")) ? (
+                  <div className="flex items-center justify-between gap-4 rounded-md border border-amber-500/20 bg-amber-500/5 p-2.5">
+                    <p className="text-xs text-muted-foreground">
+                      English recognizer is not installed. Screenshots in English scan best with it
+                      (requires administrator approval).
+                    </p>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleOpenLanguageSettings}
+                      title="Open Windows language settings to add it manually"
+                      className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
+                    >
+                      Manual setup
+                    </button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleInstallEnglishOcr}
+                      disabled={installingOcr}
+                      title="Installs the English OCR capability (shows a UAC prompt)"
+                      className="h-8 text-xs gap-1.5 shrink-0"
+                    >
+                      {installingOcr ? "Installing…" : "Install English OCR"}
+                    </Button>
+                  </div>
+                  </div>
                 ) : null}
               </div>
 
