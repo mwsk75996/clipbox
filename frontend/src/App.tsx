@@ -36,6 +36,7 @@ import { Titlebar } from "@/components/titlebar";
 import { ImageLightbox } from "@/components/image-lightbox";
 import { FileEntryCard } from "@/components/file-entry-card";
 import { FeedImageThumb } from "@/components/feed-image-thumb";
+import { highlightCode, looksLikeCode } from "@/lib/code-highlight";
 import { DeletedEntryCard } from "@/components/deleted-entry-card";
 import { Button } from "@/components/ui/button";
 import {
@@ -1617,18 +1618,34 @@ export default function App() {
                           </>
                         ) : (
                           <>
-                            <div
-                              onClick={(e) => {
-                                if (isExpanded) {
+                            {isExpanded && looksLikeCode(content) ? (
+                              <div
+                                onClick={(e) => {
                                   e.stopPropagation();
-                                }
-                              }}
-                              className={`text-sm font-dmsans font-normal tracking-normal leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] select-text cursor-text ${
-                                !isExpanded && isExpandable ? "line-clamp-1" : ""
-                              }`}
-                            >
-                              {isExpanded ? content : (lines.length > 1 ? lines[0] : content)}
-                            </div>
+                                }}
+                                className="rounded-md bg-[#0d1117] p-3 overflow-x-auto select-text cursor-text"
+                              >
+                                <pre className="m-0">
+                                  <code
+                                    className="hljs !bg-transparent !p-0 font-mono text-[13px] leading-relaxed"
+                                    dangerouslySetInnerHTML={{ __html: highlightCode(content) }}
+                                  />
+                                </pre>
+                              </div>
+                            ) : (
+                              <div
+                                onClick={(e) => {
+                                  if (isExpanded) {
+                                    e.stopPropagation();
+                                  }
+                                }}
+                                className={`text-sm font-dmsans font-normal tracking-normal leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] select-text cursor-text ${
+                                  !isExpanded && isExpandable ? "line-clamp-1" : ""
+                                }`}
+                              >
+                                {isExpanded ? content : (lines.length > 1 ? lines[0] : content)}
+                              </div>
+                            )}
 
                             {isExpandable && (
                               <div
