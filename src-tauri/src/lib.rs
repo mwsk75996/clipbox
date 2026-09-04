@@ -113,13 +113,18 @@ fn list_entries(state: tauri::State<'_, AppState>) -> Result<Vec<ClipboardEntry>
 // ----------
 
 #[tauri::command]
-fn clear_entries(state: tauri::State<'_, AppState>) -> Result<usize, String> {
+fn clear_entries(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<usize, String> {
     let store = ClipboardStore::open(&state.database_path)
         .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
-    store
+    let archived = store
         .clear_entries()
-        .map_err(|error| format!("could not clear Clipbox entries: {error}"))
+        .map_err(|error| format!("could not clear Clipbox entries: {error}"))?;
+    refresh_tray_recent_clips(&app);
+    Ok(archived)
 }
 
 // ----------
@@ -128,12 +133,16 @@ fn clear_entries(state: tauri::State<'_, AppState>) -> Result<usize, String> {
 // ----------
 
 #[tauri::command]
-fn delete_entry(state: tauri::State<'_, AppState>, id: i64) -> Result<String, String> {
+fn delete_entry(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: i64,
+) -> Result<String, String> {
     let store = ClipboardStore::open(&state.database_path)
         .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
-    if deleted_retention_setting(&store) == "immediately" {
-        return store
+    let outcome = if deleted_retention_setting(&store) == "immediately" {
+        store
             .delete_entry(id)
             .map(|deleted| {
                 if deleted {
@@ -142,19 +151,21 @@ fn delete_entry(state: tauri::State<'_, AppState>, id: i64) -> Result<String, St
                     "missing".to_string()
                 }
             })
-            .map_err(|error| format!("could not delete Clipbox entry: {error}"));
-    }
-
-    store
-        .soft_delete_entry(id)
-        .map(|archived| {
-            if archived {
-                "archived".to_string()
-            } else {
-                "missing".to_string()
-            }
-        })
-        .map_err(|error| format!("could not archive Clipbox entry: {error}"))
+            .map_err(|error| format!("could not delete Clipbox entry: {error}"))?
+    } else {
+        store
+            .soft_delete_entry(id)
+            .map(|archived| {
+                if archived {
+                    "archived".to_string()
+                } else {
+                    "missing".to_string()
+                }
+            })
+            .map_err(|error| format!("could not archive Clipbox entry: {error}"))?
+    };
+    refresh_tray_recent_clips(&app);
+    Ok(outcome)
 }
 
 // ----------
@@ -208,25 +219,34 @@ fn list_deleted_entries(
 
 #[tauri::command]
 fn restore_deleted_entry(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: i64,
 ) -> Result<Option<i64>, String> {
     let store = ClipboardStore::open(&state.database_path)
         .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
-    store
+    let restored = store
         .restore_deleted_entry(id)
-        .map_err(|error| format!("could not restore deleted Clipbox entry: {error}"))
+        .map_err(|error| format!("could not restore deleted Clipbox entry: {error}"))?;
+    refresh_tray_recent_clips(&app);
+    Ok(restored)
 }
 
 #[tauri::command]
-fn delete_deleted_entry(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, String> {
+fn delete_deleted_entry(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: i64,
+) -> Result<bool, String> {
     let store = ClipboardStore::open(&state.database_path)
         .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
-    store
+    let deleted = store
         .hard_delete_entry(id)
-        .map_err(|error| format!("could not permanently delete Clipbox entry: {error}"))
+        .map_err(|error| format!("could not permanently delete Clipbox entry: {error}"))?;
+    refresh_tray_recent_clips(&app);
+    Ok(deleted)
 }
 
 #[tauri::command]
@@ -339,6 +359,197 @@ fn toggle_window_from_tray(window: &tauri::WebviewWindow) {
         let _ = window.hide();
     } else {
         restore_and_focus(window);
+    }
+}
+
+// ----------
+// Tray Recent Clips
+// Description: Up to five latest history entries surfaced directly in the tray
+// menu for one-click copy-back. Fixed menu-item slots are refreshed in place;
+// entry ids are tracked alongside so clicks resolve even after resequencing.
+// ----------
+
+/// Number of history entries quick-pasteable from the tray (menu height).
+const TRAY_RECENT_COUNT: usize = 5;
+
+struct TrayRecentClips {
+    items: Vec<tauri::menu::MenuItem<tauri::Wry>>,
+    entry_ids: std::sync::Mutex<Vec<i64>>,
+}
+
+fn tray_clip_label(content: &str) -> String {
+    const MAX_CHARS: usize = 40;
+    let first_line = content.lines().next().unwrap_or("").trim();
+    let truncated: String = first_line.chars().take(MAX_CHARS).collect();
+    if truncated.is_empty() {
+        "(empty clip)".to_string()
+    } else if first_line.chars().count() > MAX_CHARS {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
+/// Re-read the newest history entries into the fixed tray slots.
+/// Called on startup, on every capture, and after history mutations.
+pub(crate) fn refresh_tray_recent_clips(app: &tauri::AppHandle) {
+    let db_path = match app.try_state::<AppState>() {
+        Some(state) => state.database_path.clone(),
+        None => return,
+    };
+    let entries = ClipboardStore::open(&db_path)
+        .map(|store| {
+            store
+                .recent_entries(TRAY_RECENT_COUNT as u32)
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+    let Some(tray) = app.try_state::<TrayRecentClips>() else {
+        return;
+    };
+    let mut ids = match tray.entry_ids.lock() {
+        Ok(ids) => ids,
+        Err(_) => return,
+    };
+    ids.clear();
+    for (slot, item) in tray.items.iter().enumerate() {
+        match entries.get(slot) {
+            Some(entry) => {
+                ids.push(entry.id);
+                let _ = item.set_text(tray_clip_label(&entry.content));
+                let _ = item.set_enabled(true);
+            }
+            None => {
+                let _ = item.set_text("—");
+                let _ = item.set_enabled(false);
+            }
+        }
+    }
+}
+
+fn paste_text_to_clipboard(content: &str) -> Result<(), String> {
+    clipboard::mark_internal_copy_text(content);
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard
+        .set_text(content.to_owned())
+        .map_err(|e| e.to_string())
+}
+
+fn decode_image_data_url(data_url: &str) -> Result<Vec<u8>, String> {
+    let base64_str = if let Some(idx) = data_url.find(',') {
+        &data_url[idx + 1..]
+    } else {
+        data_url
+    };
+
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    STANDARD
+        .decode(base64_str)
+        .map_err(|e| format!("failed to decode base64 image data: {e}"))
+}
+
+fn paste_image_data_url(data_url: &str) -> Result<(), String> {
+    let png_bytes = decode_image_data_url(data_url)?;
+    let sample_hash = image_clipboard::compute_bytes_hash(&png_bytes);
+    clipboard::mark_internal_copy_image(sample_hash);
+    image_clipboard::write_clipboard_image(&png_bytes)
+}
+
+fn copy_files_by_paths(paths: &[String]) -> Result<(), String> {
+    if !paths.is_empty() {
+        let items: Vec<file_clipboard::FileItem> = paths
+            .iter()
+            .map(|p| {
+                let (size, is_directory) = match std::fs::metadata(p) {
+                    Ok(m) => (m.len(), m.is_dir()),
+                    Err(_) => (0, false),
+                };
+                let name = std::path::Path::new(p)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| p.clone());
+                file_clipboard::FileItem {
+                    name,
+                    path: p.clone(),
+                    extension: String::new(),
+                    size,
+                    is_directory,
+                }
+            })
+            .collect();
+        let hash = file_clipboard::compute_files_hash(&items);
+        clipboard::mark_internal_copy_files(hash);
+    }
+
+    file_clipboard::write_clipboard_files(paths)
+}
+
+fn paste_files_json(files_json: &str) -> Result<(), String> {
+    let paths: Vec<String> = serde_json::from_str::<serde_json::Value>(files_json)
+        .ok()
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|item| item.get("path")?.as_str().map(str::to_string))
+        .collect();
+    if paths.is_empty() {
+        return Err("no file paths in archived record".into());
+    }
+    copy_files_by_paths(&paths)
+}
+
+/// Copy a tray slot's entry back to the OS clipboard. Marks the write as
+/// internal first so the monitor bumps the entry instead of duplicating it.
+/// A vanished entry refreshes the menu instead of failing loudly.
+fn paste_tray_clip(app: &tauri::AppHandle, slot: usize) {
+    let entry_id = {
+        let tray = match app.try_state::<TrayRecentClips>() {
+            Some(tray) => tray,
+            None => return,
+        };
+        let ids = match tray.entry_ids.lock() {
+            Ok(ids) => ids,
+            Err(_) => return,
+        };
+        ids.get(slot).copied()
+    };
+    let Some(entry_id) = entry_id else {
+        return;
+    };
+
+    let db_path = match app.try_state::<AppState>() {
+        Some(state) => state.database_path.clone(),
+        None => return,
+    };
+    let entry = match ClipboardStore::open(&db_path)
+        .ok()
+        .and_then(|store| store.get_entry(entry_id).ok().flatten())
+    {
+        Some(entry) => entry,
+        None => {
+            refresh_tray_recent_clips(app);
+            return;
+        }
+    };
+
+    let result = if entry.entry_type == "image" {
+        match entry.image_data.as_deref() {
+            Some(data_url) => paste_image_data_url(data_url),
+            None => return,
+        }
+    } else if entry.entry_type == "file" {
+        match entry.files_data.as_deref() {
+            Some(files_json) => paste_files_json(files_json),
+            None => return,
+        }
+    } else {
+        paste_text_to_clipboard(&entry.content)
+    };
+
+    if result.is_err() {
+        refresh_tray_recent_clips(app);
     }
 }
 
@@ -677,7 +888,11 @@ fn get_retention_limit(state: tauri::State<'_, AppState>) -> Result<String, Stri
 }
 
 #[tauri::command]
-fn set_retention_limit(state: tauri::State<'_, AppState>, limit: String) -> Result<usize, String> {
+fn set_retention_limit(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    limit: String,
+) -> Result<usize, String> {
     let store = ClipboardStore::open(&state.database_path)
         .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
@@ -693,6 +908,7 @@ fn set_retention_limit(state: tauri::State<'_, AppState>, limit: String) -> Resu
         0
     };
 
+    refresh_tray_recent_clips(&app);
     Ok(pruned)
 }
 
@@ -984,22 +1200,7 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
 
 #[tauri::command]
 fn copy_image_to_clipboard(data_url: String) -> Result<(), String> {
-    let base64_str = if let Some(idx) = data_url.find(',') {
-        &data_url[idx + 1..]
-    } else {
-        &data_url
-    };
-
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine;
-    let png_bytes = STANDARD
-        .decode(base64_str)
-        .map_err(|e| format!("failed to decode base64 image data: {e}"))?;
-
-    let sample_hash = image_clipboard::compute_bytes_hash(&png_bytes);
-    clipboard::mark_internal_copy_image(sample_hash);
-
-    image_clipboard::write_clipboard_image(&png_bytes)
+    paste_image_data_url(&data_url)
 }
 
 // ----------
@@ -1009,32 +1210,7 @@ fn copy_image_to_clipboard(data_url: String) -> Result<(), String> {
 
 #[tauri::command]
 fn copy_files_to_clipboard(paths: Vec<String>) -> Result<(), String> {
-    if !paths.is_empty() {
-        let items: Vec<file_clipboard::FileItem> = paths
-            .iter()
-            .map(|p| {
-                let (size, is_directory) = match std::fs::metadata(p) {
-                    Ok(m) => (m.len(), m.is_dir()),
-                    Err(_) => (0, false),
-                };
-                let name = std::path::Path::new(p)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| p.clone());
-                file_clipboard::FileItem {
-                    name,
-                    path: p.clone(),
-                    extension: String::new(),
-                    size,
-                    is_directory,
-                }
-            })
-            .collect();
-        let hash = file_clipboard::compute_files_hash(&items);
-        clipboard::mark_internal_copy_files(hash);
-    }
-
-    file_clipboard::write_clipboard_files(&paths)
+    copy_files_by_paths(&paths)
 }
 
 // ----------
@@ -1205,7 +1381,41 @@ pub fn run() {
             let pause_item = tauri::menu::MenuItem::with_id(app, "toggle_pause", "Pause / Resume Monitoring", true, None::<&str>)?;
             let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
             let quit_item = tauri::menu::MenuItem::with_id(app, "quit", "Quit Clipbox", true, None::<&str>)?;
-            let tray_menu = tauri::menu::Menu::with_items(app, &[&show_item, &hide_item, &pause_item, &separator, &quit_item])?;
+
+            // Fixed quick-paste slots, populated below and refreshed in place.
+            let mut paste_items = Vec::with_capacity(TRAY_RECENT_COUNT);
+            for slot in 0..TRAY_RECENT_COUNT {
+                paste_items.push(tauri::menu::MenuItem::with_id(
+                    app,
+                    format!("paste-{slot}"),
+                    "—",
+                    false,
+                    None::<&str>,
+                )?);
+            }
+            app.manage(TrayRecentClips {
+                items: paste_items.clone(),
+                entry_ids: std::sync::Mutex::new(Vec::new()),
+            });
+            let paste_separator = tauri::menu::PredefinedMenuItem::separator(app)?;
+            let tray_menu = tauri::menu::Menu::with_items(
+                app,
+                &[
+                    &paste_items[0],
+                    &paste_items[1],
+                    &paste_items[2],
+                    &paste_items[3],
+                    &paste_items[4],
+                    &paste_separator,
+                    &show_item,
+                    &hide_item,
+                    &pause_item,
+                    &separator,
+                    &quit_item,
+                ],
+            )?;
+            let app_handle = app.handle();
+            refresh_tray_recent_clips(&app_handle);
 
             let mut tray_builder = tauri::tray::TrayIconBuilder::new()
                 .tooltip("Clipbox")
@@ -1234,6 +1444,11 @@ pub fn run() {
                     }
                     "quit" => {
                         app.exit(0);
+                    }
+                    id if id.starts_with("paste-") => {
+                        if let Ok(slot) = id["paste-".len()..].parse::<usize>() {
+                            paste_tray_clip(app, slot);
+                        }
                     }
                     _ => {}
                 })
