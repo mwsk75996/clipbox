@@ -67,11 +67,13 @@ fn scan_entry_blocking(database_path: &Path, entry_id: i64) -> Result<(), String
     Ok(())
 }
 
-/// OCR availability snapshot for Settings: a usable engine plus its language.
-pub fn engine_status() -> (bool, String) {
+/// Availability of the engine for an explicit language preference,
+/// falling back through the automatic chain. Used by Settings so the
+/// status pill describes the engine scans actually use.
+pub fn engine_status_for(preferred: &str) -> (bool, String) {
     #[cfg(windows)]
     {
-        match ocr_engine() {
+        match ocr_engine_preferred(preferred) {
             Ok((_, tag)) => (true, tag),
             Err(_) => (false, String::new()),
         }
@@ -79,6 +81,7 @@ pub fn engine_status() -> (bool, String) {
 
     #[cfg(not(windows))]
     {
+        let _ = preferred;
         (false, String::new())
     }
 }
@@ -123,7 +126,7 @@ fn preferred_language(store: &ClipboardStore) -> String {
 /// Engine for an explicit language preference, falling back to the
 /// automatic chain when unset ("auto") or unavailable.
 #[cfg(windows)]
-fn ocr_engine_preferred(
+pub(crate) fn ocr_engine_preferred(
     preferred: &str,
 ) -> Result<(windows::Media::Ocr::OcrEngine, String), String> {
     use windows::Globalization::Language;

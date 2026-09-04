@@ -647,15 +647,22 @@ struct OcrStatus {
 fn get_ocr_status(state: tauri::State<'_, AppState>) -> Result<OcrStatus, String> {
     let store = ClipboardStore::open(&state.database_path)
         .map_err(|error| format!("could not open Clipbox database: {error}"))?;
-    let selected = store
+    let stored = store
         .get_setting("ocr_language")
         .unwrap_or_default()
         .unwrap_or_else(|| "auto".into());
-    let (available, language) = ocr::engine_status();
+    // Normalize unknown values so the pill never describes a phantom engine.
+    let languages = ocr::available_languages();
+    let selected = if stored == "auto" || languages.iter().any(|tag| tag == &stored) {
+        stored
+    } else {
+        "auto".into()
+    };
+    let (available, language) = ocr::engine_status_for(&selected);
     Ok(OcrStatus {
         available,
         language,
-        languages: ocr::available_languages(),
+        languages,
         selected,
     })
 }
