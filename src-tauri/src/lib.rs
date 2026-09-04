@@ -848,13 +848,10 @@ fn install_update(app: tauri::AppHandle, path: String) -> Result<(), String> {
         // Silent-install, then reopen the fresh build. Our own exit lands
         // first; the delay absorbs slow shutdowns and installer startup.
         // Hidden console: no window may flash for this background handoff.
-        let script = format!(
-            "timeout /t 10 /nobreak >nul & \"{path}\" /S & start \"\" \"{}\"",
-            current.display()
-        );
+        let argv = updater_argv(&path, &current.display().to_string());
         use std::os::windows::process::CommandExt;
         std::process::Command::new("cmd")
-            .args(["/C", &script])
+            .args(&argv)
             .creation_flags(0x08000000)
             .spawn()
             .map_err(|error| format!("could not launch updater: {error}"))?;
@@ -866,6 +863,39 @@ fn install_update(app: tauri::AppHandle, path: String) -> Result<(), String> {
     {
         let _ = (app, path);
         Err("self-update is currently supported on Windows".into())
+    }
+}
+
+/// Detached updater command line. cmd.exe strips the first and last quote of
+/// a bare /C string (mangling any inner quotes), so the documented safe form
+/// is used: /S /C with the whole script wrapped in one outer pair, leaving
+/// the inner quoting verbatim.
+fn updater_argv(installer: &str, target: &str) -> Vec<String> {
+    vec![
+        "/S".to_string(),
+        "/C".to_string(),
+        format!("\"timeout /t 10 /nobreak >nul & \"{installer}\" /S & start \"\" \"{target}\"\""),
+    ]
+}
+
+#[cfg(test)]
+mod updater_argv_tests {
+    use super::updater_argv;
+
+    #[test]
+    fn inner_quotes_survive_cmd_parsing() {
+        let argv = updater_argv(
+            r"C:\Temp\Clipbox_1.1.1_x64-setup.exe",
+            r"C:\Users\matti\AppData\Local\Clipbox\clipbox.exe",
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "/S".to_string(),
+                "/C".to_string(),
+                "\"timeout /t 10 /nobreak >nul & \"C:\\Temp\\Clipbox_1.1.1_x64-setup.exe\" /S & start \"\" \"C:\\Users\\matti\\AppData\\Local\\Clipbox\\clipbox.exe\"\"".to_string(),
+            ]
+        );
     }
 }
 
