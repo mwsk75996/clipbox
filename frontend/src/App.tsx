@@ -248,6 +248,9 @@ export default function App() {
   const [isFilterOpen, setIsFilterOpen] = React.useState(false);
   const [previewEntry, setPreviewEntry] = React.useState<ClipboardEntry | null>(null);
   const [showDeleted, setShowDeleted] = React.useState(false);
+  const [showOcrHighlights, setShowOcrHighlights] = React.useState(() => {
+    return localStorage.getItem("clipbox:ocrHighlights") !== "false";
+  });
   const [deletedEntries, setDeletedEntries] = React.useState<DeletedClipboardEntry[]>([]);
   const [entriesPerPage, setEntriesPerPage] = React.useState("25");
   const [page, setPage] = React.useState(1);
@@ -1251,6 +1254,11 @@ export default function App() {
                 setFocusedIndex(null);
                 scrollFeedToTop();
               }}
+              showOcrHighlights={showOcrHighlights}
+              onOcrHighlightChange={(value) => {
+                setShowOcrHighlights(value);
+                localStorage.setItem("clipbox:ocrHighlights", String(value));
+              }}
             />
           </div>
         </header>
@@ -1580,13 +1588,14 @@ export default function App() {
                           />
                         ) : entry.entryType === "image" && entry.imageData ? (
                           <>
-                            <FeedImageThumb
-                              imageData={entry.imageData}
-                              alt={entry.content}
-                              boxesJson={entry.ocrBoxes}
-                              searchQuery={searchQuery}
-                              onPreview={() => setPreviewEntry(entry)}
-                            />
+                          <FeedImageThumb
+                            imageData={entry.imageData}
+                            alt={entry.content}
+                            boxesJson={entry.ocrBoxes}
+                            searchQuery={searchQuery}
+                            showHighlights={showOcrHighlights}
+                            onPreview={() => setPreviewEntry(entry)}
+                          />
                             {entry.imageDimensions && (
                               <div className="flex items-center justify-between mt-2 text-[11px] text-muted-foreground font-mono">
                                 <div className="flex items-center gap-1.5">
@@ -1771,6 +1780,7 @@ export default function App() {
         onClose={() => setPreviewEntry(null)}
         formatTimestamp={formatTimestamp}
         searchQuery={searchQuery}
+        showHighlights={showOcrHighlights}
       />
 
       {/* Close behavior prompt (titlebar X, or Alt+F4 in "ask" mode) */}

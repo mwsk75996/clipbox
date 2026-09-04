@@ -30,6 +30,7 @@ interface ImageLightboxProps {
   onClose: () => void;
   formatTimestamp: (timestamp: number) => string;
   searchQuery: string;
+  showHighlights: boolean;
 }
 
 export function ImageLightbox({
@@ -38,6 +39,7 @@ export function ImageLightbox({
   onClose,
   formatTimestamp,
   searchQuery,
+  showHighlights,
 }: ImageLightboxProps) {
   const [isEditing, setIsEditing] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
@@ -60,8 +62,8 @@ export function ImageLightbox({
   // OCR word boxes matching the current feed search, overlaid on the image.
   // Memoized since renders happen on every zoom/pan frame.
   const matchedBoxes = React.useMemo<OcrBox[]>(
-    () => matchOcrBoxes(entry?.ocrBoxes, searchQuery),
-    [entry?.ocrBoxes, searchQuery]
+    () => (showHighlights ? matchOcrBoxes(entry?.ocrBoxes, searchQuery) : []),
+    [entry?.ocrBoxes, searchQuery, showHighlights]
   );
 
   // Reset zoom, pan, and edit state ONLY when modal opens afresh or when switching to a different clip

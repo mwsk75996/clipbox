@@ -150,6 +150,8 @@ interface SettingsModalProps {
   isMonitoringPaused?: boolean;
   onMonitoringPausedChange?: (paused: boolean) => void;
   onEntriesPerPageChange?: (perPage: string) => void;
+  showOcrHighlights?: boolean;
+  onOcrHighlightChange?: (show: boolean) => void;
 }
 
 export function SettingsModal({
@@ -159,6 +161,8 @@ export function SettingsModal({
   isMonitoringPaused: externalIsMonitoringPaused,
   onMonitoringPausedChange,
   onEntriesPerPageChange,
+  showOcrHighlights: externalShowOcrHighlights,
+  onOcrHighlightChange,
 }: SettingsModalProps) {
   const [open, setOpen] = React.useState(false);
   const [launchOnStartup, setLaunchOnStartup] = React.useState(() => {
@@ -202,6 +206,22 @@ export function SettingsModal({
   } | null>(null);
   const [ocrLanguage, setOcrLanguage] = React.useState("auto");
   const [installingOcr, setInstallingOcr] = React.useState(false);
+  const [highlightMatches, setHighlightMatches] = React.useState(() => {
+    const saved = localStorage.getItem("clipbox:ocrHighlights");
+    return saved !== null ? saved === "true" : (externalShowOcrHighlights ?? true);
+  });
+
+  React.useEffect(() => {
+    if (externalShowOcrHighlights !== undefined) {
+      setHighlightMatches(externalShowOcrHighlights);
+    }
+  }, [externalShowOcrHighlights]);
+
+  const handleToggleOcrHighlights = (checked: boolean) => {
+    setHighlightMatches(checked);
+    localStorage.setItem("clipbox:ocrHighlights", String(checked));
+    onOcrHighlightChange?.(checked);
+  };
   const [closeBehavior, setCloseBehavior] = React.useState(() => {
     return localStorage.getItem("clipbox:closeBehavior") || "ask";
   });
@@ -909,6 +929,25 @@ export function SettingsModal({
                   </div>
                   </div>
                 ) : null}
+
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <label
+                      htmlFor="ocr-highlight-toggle"
+                      className="text-sm font-medium cursor-pointer"
+                    >
+                      Highlight search matches
+                    </label>
+                    <p className="text-xs text-muted-foreground">
+                      Outline recognized words matching your search on images.
+                    </p>
+                  </div>
+                  <Switch
+                    id="ocr-highlight-toggle"
+                    checked={highlightMatches}
+                    onCheckedChange={handleToggleOcrHighlights}
+                  />
+                </div>
               </div>
 
               {/* Excluded Applications Manager */}

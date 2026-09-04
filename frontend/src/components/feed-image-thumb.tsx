@@ -12,6 +12,7 @@ interface FeedImageThumbProps {
   alt: string;
   boxesJson?: string | null;
   searchQuery: string;
+  showHighlights: boolean;
   onPreview: () => void;
 }
 
@@ -20,11 +21,12 @@ export function FeedImageThumb({
   alt,
   boxesJson,
   searchQuery,
+  showHighlights,
   onPreview,
 }: FeedImageThumbProps) {
   const matchedBoxes = React.useMemo(
-    () => matchOcrBoxes(boxesJson, searchQuery),
-    [boxesJson, searchQuery]
+    () => (showHighlights ? matchOcrBoxes(boxesJson, searchQuery) : []),
+    [boxesJson, searchQuery, showHighlights]
   );
 
   return (
