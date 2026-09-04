@@ -194,6 +194,7 @@ export function SettingsModal({
     return localStorage.getItem("clipbox:deletedRetention") || "7days";
   });
   const [purgedNotice, setPurgedNotice] = React.useState<number | null>(null);
+  const [ocrStatus, setOcrStatus] = React.useState<{ available: boolean; language: string } | null>(null);
   const [closeBehavior, setCloseBehavior] = React.useState(() => {
     return localStorage.getItem("clipbox:closeBehavior") || "ask";
   });
@@ -260,6 +261,13 @@ export function SettingsModal({
           setIgnorePasswordManagers(privacy.ignore_password_managers);
           setExcludedApps(privacy.excluded_applications || []);
           setDuplicateHandling(privacy.duplicate_handling || "bump");
+
+          try {
+            const ocr = await invoke<{ available: boolean; language: string }>("get_ocr_status");
+            setOcrStatus(ocr);
+          } catch {
+            setOcrStatus({ available: false, language: "" });
+          }
 
           const shortcutData = await invoke<ShortcutSettings>("get_shortcut_settings");
           setShortcuts(shortcutData);
@@ -501,6 +509,16 @@ export function SettingsModal({
       }
     } catch (err) {
       console.error("Failed to update entries per page", err);
+    }
+  };
+
+  const handleOpenLanguageSettings = async () => {
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("open_language_settings");
+      }
+    } catch (err) {
+      console.error("Failed to open language settings", err);
     }
   };
 
@@ -755,6 +773,43 @@ export function SettingsModal({
                     <SelectItem value="create_new">Record duplicate</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+
+              {/* Screenshot Text Search */}
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-0.5">
+                  <label className="text-sm font-medium">Screenshot text search</label>
+                  <p className="text-xs text-muted-foreground">
+                    Recognize text in screenshots on this device so images become searchable. Nothing is uploaded.
+                  </p>
+                  <p
+                    className={`text-xs ${
+                      ocrStatus === null
+                        ? "text-muted-foreground"
+                        : ocrStatus.available
+                          ? "text-emerald-600 dark:text-emerald-400"
+                          : "text-amber-600 dark:text-amber-400"
+                    }`}
+                  >
+                    {ocrStatus === null
+                      ? "Checking support..."
+                      : ocrStatus.available
+                        ? `Available${ocrStatus.language ? ` (${ocrStatus.language})` : ""}`
+                        : "Recognizer components are not installed."}
+                  </p>
+                </div>
+                {ocrStatus !== null && !ocrStatus.available ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleOpenLanguageSettings}
+                    title="Opens Windows language settings to add OCR support"
+                    className="h-8 text-xs gap-1.5 shrink-0"
+                  >
+                    Install support
+                  </Button>
+                ) : null}
               </div>
 
               {/* Excluded Applications Manager */}

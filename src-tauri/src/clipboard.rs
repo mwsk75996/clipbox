@@ -287,6 +287,7 @@ fn monitor_windows(database_path: PathBuf, app: tauri::AppHandle) {
                 check_clipboard(
                     &store,
                     &app,
+                    &database_path,
                     &mut previous_files_hash,
                     &mut previous_text,
                     &mut previous_image_hash,
@@ -334,6 +335,7 @@ fn monitor_polling(database_path: PathBuf, app: tauri::AppHandle) {
         check_clipboard(
             &store,
             &app,
+            &database_path,
             &mut previous_files_hash,
             &mut previous_text,
             &mut previous_image_hash,
@@ -365,6 +367,7 @@ fn get_clipboard_text_with_retry() -> Result<String, arboard::Error> {
 fn check_clipboard(
     store: &ClipboardStore,
     app: &tauri::AppHandle,
+    database_path: &std::path::Path,
     previous_files_hash: &mut Option<u64>,
     previous_text: &mut Option<String>,
     previous_image_hash: &mut Option<u64>,
@@ -438,6 +441,7 @@ fn check_clipboard(
                                 image_dimensions: None,
                                 files_data: Some(files.files_json),
                                 source_url: None,
+                                ocr_text: None,
                             };
                             let _ = app.emit("clipboard://new-entry", entry);
                             crate::refresh_tray_recent_clips(app);
@@ -516,6 +520,7 @@ fn check_clipboard(
                     match store.add_image_entry(&img.data_url, &img.dimensions, &metadata) {
                         Ok(id) => {
                             eprintln!("stored clipboard image entry {id}");
+                            crate::ocr::scan_entry_async(database_path.to_path_buf(), id);
                             let entry = crate::ClipboardEntry {
                                 id,
                                 content: format!("Image ({})", img.dimensions),
@@ -533,6 +538,7 @@ fn check_clipboard(
                                 image_dimensions: Some(img.dimensions),
                                 files_data: None,
                                 source_url: metadata.source_url,
+                                ocr_text: None,
                             };
                             let _ = app.emit("clipboard://new-entry", entry);
                             crate::refresh_tray_recent_clips(app);
@@ -622,6 +628,7 @@ fn check_clipboard(
                                 image_dimensions: None,
                                 files_data: None,
                                 source_url: metadata.source_url,
+                                ocr_text: None,
                             };
                             let _ = app.emit("clipboard://new-entry", entry);
                             crate::refresh_tray_recent_clips(app);

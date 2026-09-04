@@ -91,6 +91,7 @@ export interface ClipboardEntry {
   imageDimensions?: string | null;
   filesData?: string | null;
   sourceUrl?: string | null;
+  ocrText?: string | null;
 }
 
 export interface DeletedClipboardEntry {
@@ -457,6 +458,7 @@ export default function App() {
           entry.windowTitle,
           entry.sourceUrl,
           effectiveUrl,
+          entry.ocrText,
         ].some((val) => val?.toLowerCase().includes(query));
 
       const matchesApp =

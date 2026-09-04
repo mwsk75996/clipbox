@@ -34,6 +34,7 @@ pub struct ClipboardEntry {
     pub image_dimensions: Option<String>,
     pub files_data: Option<String>,
     pub source_url: Option<String>,
+    pub ocr_text: Option<String>,
 }
 
 /// An archived clipboard item awaiting restore, permanent deletion, or purge.
@@ -145,6 +146,7 @@ impl ClipboardStore {
             ("image_dimensions", "image_dimensions TEXT"),
             ("files_data", "files_data TEXT"),
             ("source_url", "source_url TEXT"),
+            ("ocr_text", "ocr_text TEXT"),
         ] {
             if !Self::has_column(&connection, column)? {
                 connection.execute(
@@ -342,7 +344,7 @@ impl ClipboardStore {
     /// Return the newest stored entries first, prioritizing pinned entries.
     pub fn recent_entries(&self, limit: u32) -> Result<Vec<ClipboardEntry>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url
+            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, ocr_text
              FROM clipboard_entries
              ORDER BY is_pinned DESC, copied_at DESC, id DESC
              LIMIT ?1",
@@ -363,6 +365,7 @@ impl ClipboardStore {
                 image_dimensions: row.get(10)?,
                 files_data: row.get(11)?,
                 source_url: row.get(12)?,
+                ocr_text: row.get(13)?,
             })
         })?;
 
@@ -372,7 +375,7 @@ impl ClipboardStore {
     /// Return a single stored entry by its ID.
     pub fn get_entry(&self, id: i64) -> Result<Option<ClipboardEntry>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url
+            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, ocr_text
              FROM clipboard_entries
              WHERE id = ?1",
         )?;
@@ -392,6 +395,7 @@ impl ClipboardStore {
                 image_dimensions: row.get(10)?,
                 files_data: row.get(11)?,
                 source_url: row.get(12)?,
+                ocr_text: row.get(13)?,
             })
         })?;
 
@@ -698,6 +702,35 @@ impl ClipboardStore {
         )?;
 
         Ok(purged)
+    }
+
+    // ----------
+    // Image OCR Text
+    // Description: Stores text recognized in image entries (empty string when
+    // nothing was found, so NULL keeps meaning "never scanned") and lists
+    // unscanned images for background backfills.
+    // ----------
+    /// Store recognized text for an entry. Empty string marks a completed
+    /// scan that found nothing.
+    pub fn set_ocr_text(&self, id: i64, ocr_text: &str) -> Result<()> {
+        self.connection.execute(
+            "UPDATE clipboard_entries SET ocr_text = ?1 WHERE id = ?2",
+            params![ocr_text, id],
+        )?;
+        Ok(())
+    }
+
+    /// Ids of image entries never scanned for text, oldest first.
+    pub fn images_missing_ocr_text(&self, limit: u32) -> Result<Vec<i64>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id FROM clipboard_entries
+             WHERE entry_type = 'image' AND ocr_text IS NULL
+             ORDER BY id ASC
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map(params![i64::from(limit)], |row| row.get(0))?;
+
+        rows.collect()
     }
 
     // ----------
@@ -1307,5 +1340,51 @@ mod tests {
             None
         );
         assert_eq!(super::deleted_retention_lifetime_seconds("bogus"), None);
+    }
+
+    #[test]
+    fn stores_and_queries_ocr_text() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        let fake_data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        let metadata = super::ClipboardMetadata::default();
+        let id = store
+            .add_image_entry(fake_data_url, "1x1", &metadata)
+            .expect("image should be stored");
+
+        assert_eq!(
+            store.images_missing_ocr_text(10).expect("missing scan should query"),
+            vec![id]
+        );
+
+        store
+            .set_ocr_text(id, "hello world")
+            .expect("ocr text should store");
+        assert!(store
+            .images_missing_ocr_text(10)
+            .expect("missing scan should query")
+            .is_empty());
+
+        let entry = store
+            .get_entry(id)
+            .expect("entry should be queryable")
+            .expect("entry should exist");
+        assert_eq!(entry.ocr_text.as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn empty_ocr_text_marks_completed_scans() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        let fake_data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        let metadata = super::ClipboardMetadata::default();
+        let id = store
+            .add_image_entry(fake_data_url, "1x1", &metadata)
+            .expect("image should be stored");
+
+        // Empty string (found nothing) still counts as scanned.
+        store.set_ocr_text(id, "").expect("ocr text should store");
+        assert!(store
+            .images_missing_ocr_text(10)
+            .expect("missing scan should query")
+            .is_empty());
     }
 }

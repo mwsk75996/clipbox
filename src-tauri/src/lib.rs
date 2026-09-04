@@ -12,6 +12,7 @@ mod browser_url;
 mod clipboard;
 mod file_clipboard;
 mod image_clipboard;
+mod ocr;
 mod source;
 
 struct AppState {
@@ -34,6 +35,7 @@ pub struct ClipboardEntry {
     pub image_dimensions: Option<String>,
     pub files_data: Option<String>,
     pub source_url: Option<String>,
+    pub ocr_text: Option<String>,
 }
 
 impl From<CoreClipboardEntry> for ClipboardEntry {
@@ -52,6 +54,7 @@ impl From<CoreClipboardEntry> for ClipboardEntry {
             image_dimensions: entry.image_dimensions,
             files_data: entry.files_data,
             source_url: entry.source_url,
+            ocr_text: entry.ocr_text,
         }
     }
 }
@@ -74,7 +77,6 @@ pub struct DeletedClipboardEntry {
     pub source_url: Option<String>,
     pub deleted_at: i64,
 }
-
 impl From<CoreDeletedEntry> for DeletedClipboardEntry {
     fn from(entry: CoreDeletedEntry) -> Self {
         Self {
@@ -626,6 +628,49 @@ fn set_entries_per_page(state: tauri::State<'_, AppState>, per_page: String) -> 
     store
         .set_setting("entries_per_page", &per_page)
         .map_err(|error| format!("could not save entries per page setting: {error}"))
+}
+
+// ----------
+// Image OCR Status Commands
+// Description: Reports on-device screenshot text-recognition availability and opens Windows language settings to install recognizer support.
+// ----------
+
+#[derive(serde::Serialize)]
+struct OcrStatus {
+    available: bool,
+    language: String,
+}
+
+#[tauri::command]
+fn get_ocr_status() -> OcrStatus {
+    let (available, language) = ocr::engine_status();
+    OcrStatus {
+        available,
+        language,
+    }
+}
+
+#[tauri::command]
+fn open_language_settings() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows::core::w;
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+        let result =
+            unsafe { ShellExecuteW(None, w!("open"), w!("ms-settings:regionlanguage"), None, None, SW_SHOW) };
+        if result.0 as usize > 32 {
+            Ok(())
+        } else {
+            Err("could not open Windows language settings".into())
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err("language settings shortcut is currently supported on Windows".into())
+    }
 }
 
 // ----------
@@ -1722,6 +1767,9 @@ pub fn run() {
             let app_handle = app.handle();
             refresh_global_toggle_shortcut(app_handle, &database_path);
 
+            // Scan pre-existing unscanned screenshots in the background.
+            ocr::backfill_missing(database_path.clone());
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1765,6 +1813,8 @@ pub fn run() {
             set_close_behavior,
             get_entries_per_page,
             set_entries_per_page,
+            get_ocr_status,
+            open_language_settings,
             get_app_version,
             download_update,
             install_update,
