@@ -850,7 +850,11 @@ fn install_update(app: tauri::AppHandle, path: String) -> Result<(), String> {
         // Hidden console: no window may flash for this background handoff.
         // The script travels base64-encoded: unlike cmd argv strings, the
         // encoding alphabet has no spaces or quotes for any parser to mangle.
-        let script = updater_powershell_script(&path, &current.display().to_string());
+        let script = updater_powershell_script(
+            &path,
+            &current.display().to_string(),
+            std::process::id(),
+        );
         let encoded: String = {
             use base64::Engine as _;
             base64::engine::general_purpose::STANDARD.encode(
@@ -886,17 +890,28 @@ fn install_update(app: tauri::AppHandle, path: String) -> Result<(), String> {
     }
 }
 
-/// Self-update handoff script: wait out our own shutdown, silent-install,
-/// reopen the fresh build, remove the staged installer. Single quotes delimit
+/// Self-update handoff script: wait until no other Clipbox process holds
+/// files (our own exit lands first), silent-install, reopen the fresh build,
+/// remove the staged installer. Every step logs to clipbox-update.log so a
+/// failed handoff is diagnosable instead of silent. Single quotes delimit
 /// paths (PowerShell-safe); the caller transports this base64-encoded so no
 /// shell layer ever parses it.
-fn updater_powershell_script(installer: &str, target: &str) -> String {
+fn updater_powershell_script(installer: &str, target: &str, own_pid: u32) -> String {
     let quote = |path: &str| path.replace('\'', "''");
     format!(
-        "Start-Sleep -Seconds 5; & '{}' /S; Start-Process '{}'; Remove-Item '{}' -ErrorAction SilentlyContinue",
-        quote(installer),
-        quote(target),
-        quote(installer)
+        "$log = Join-Path $env:TEMP 'clipbox-update.log'; \
+         'handoff start' | Out-File $log; \
+         $tries = 0; \
+         while ((Get-Process -Name clipbox -ErrorAction SilentlyContinue | Where-Object {{ $_.Id -ne {own_pid} }}) -and ($tries -lt 60)) {{ Start-Sleep 1; $tries++ }}; \
+         'waited for other instances' | Out-File $log -Append; \
+         & '{installer}' /S; \
+         'installer exit code: ' + $LASTEXITCODE | Out-File $log -Append; \
+         Start-Process '{target}'; \
+         'relaunched' | Out-File $log -Append; \
+         Remove-Item '{installer}' -ErrorAction SilentlyContinue",
+        installer = quote(installer),
+        target = quote(target),
+        own_pid = own_pid
     )
 }
 
@@ -920,11 +935,11 @@ mod updater_script_tests {
         let script = updater_powershell_script(
             r"C:\Temp\Clipbox_1.1.1_x64-setup.exe",
             r"C:\Users\matti\AppData\Local\Clipbox\clipbox.exe",
+            1234,
         );
-        assert_eq!(
-            script,
-            r"Start-Sleep -Seconds 5; & 'C:\Temp\Clipbox_1.1.1_x64-setup.exe' /S; Start-Process 'C:\Users\matti\AppData\Local\Clipbox\clipbox.exe'; Remove-Item 'C:\Temp\Clipbox_1.1.1_x64-setup.exe' -ErrorAction SilentlyContinue"
-        );
+        assert!(script.contains(r"'C:\Temp\Clipbox_1.1.1_x64-setup.exe' /S"));
+        assert!(script.contains("1234"));
+        assert!(script.contains("clipbox-update.log"));
     }
 
     #[test]
@@ -932,6 +947,7 @@ mod updater_script_tests {
         let script = updater_powershell_script(
             r"C:\Temp\O'Brien\setup.exe",
             r"C:\Temp\app.exe",
+            1234,
         );
         assert!(script.contains(r"'C:\Temp\O''Brien\setup.exe'"));
         assert!(!script.contains('\"'));
