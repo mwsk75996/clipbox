@@ -373,7 +373,18 @@ export default function App() {
               return;
             }
             setEntries((prev) => {
-              if (prev.some((e) => e.id === event.payload.id)) {
+              // Match full identity, not just id: backend ID resequencing
+              // means a fresh capture can reuse an id still carried by a
+              // stale displayed row. Same id but different content is a new
+              // row, not a duplicate; same everything is a re-delivery.
+              if (
+                prev.some(
+                  (e) =>
+                    e.id === event.payload.id &&
+                    e.content === event.payload.content &&
+                    e.copiedAt === event.payload.copiedAt
+                )
+              ) {
                 return prev;
               }
               return [event.payload, ...prev];
