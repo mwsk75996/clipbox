@@ -979,6 +979,23 @@ pub struct ShortcutSettings {
     pub toggle_pin: KeyBinding,
     pub delete_entry: KeyBinding,
     pub clear_escape: KeyBinding,
+    // Serde-defaulted (not merely Default-impl'd) so stored settings from
+    // before this field existed still deserialize instead of resetting all
+    // rebinds to defaults.
+    #[serde(default = "default_toggle_window")]
+    pub toggle_window: KeyBinding,
+}
+
+fn default_toggle_window() -> KeyBinding {
+    // Unbound by default: the user opts into a global hotkey explicitly.
+    KeyBinding {
+        key: "".into(),
+        ctrl: false,
+        shift: false,
+        alt: false,
+        meta: false,
+        label: "Not bound".into(),
+    }
 }
 
 impl Default for ShortcutSettings {
@@ -1048,6 +1065,7 @@ impl Default for ShortcutSettings {
                 meta: false,
                 label: "Escape".into(),
             },
+            toggle_window: default_toggle_window(),
         }
     }
 }
@@ -1180,6 +1198,7 @@ fn get_shortcut_settings(state: tauri::State<'_, AppState>) -> Result<ShortcutSe
 
 #[tauri::command]
 fn set_shortcut_settings(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     settings: ShortcutSettings,
 ) -> Result<(), String> {
@@ -1191,11 +1210,18 @@ fn set_shortcut_settings(
 
     store
         .set_setting("keyboard_shortcuts", &json)
-        .map_err(|e| format!("could not save keyboard shortcuts: {e}"))
+        .map_err(|e| format!("could not save keyboard shortcuts: {e}"))?;
+
+    // Rebinds (including the global toggle) apply without a restart.
+    refresh_global_toggle_shortcut(&app, &state.database_path);
+    Ok(())
 }
 
 #[tauri::command]
-fn reset_shortcut_settings(state: tauri::State<'_, AppState>) -> Result<ShortcutSettings, String> {
+fn reset_shortcut_settings(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<ShortcutSettings, String> {
     let store = ClipboardStore::open(&state.database_path)
         .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
@@ -1207,7 +1233,132 @@ fn reset_shortcut_settings(state: tauri::State<'_, AppState>) -> Result<Shortcut
         .set_setting("keyboard_shortcuts", &json)
         .map_err(|e| format!("could not reset keyboard shortcuts: {e}"))?;
 
+    refresh_global_toggle_shortcut(&app, &state.database_path);
     Ok(defaults)
+}
+
+// ----------
+// Global Window Toggle Hotkey
+// Description: System-wide hotkey showing/hiding the main window, driven by the stored toggle_window binding and handled through the tray toggle lifecycle.
+// ----------
+
+/// Build a global-shortcut accelerator string (e.g. "Alt+Shift+V") from a
+/// stored key binding. Returns None for empty keys, bare keys without any
+/// modifier (registering those would swallow normal typing system-wide),
+/// and unparseable input.
+fn toggle_window_accelerator(binding: &serde_json::Value) -> Option<String> {
+    let key = binding.get("key")?.as_str()?;
+    if key.is_empty() {
+        return None;
+    }
+
+    let flag = |name: &str| binding.get(name).and_then(|v| v.as_bool()).unwrap_or(false);
+    let mut parts = Vec::new();
+    if flag("ctrl") {
+        parts.push("CommandOrControl".to_string());
+    }
+    if flag("alt") {
+        parts.push("Alt".to_string());
+    }
+    if flag("shift") {
+        parts.push("Shift".to_string());
+    }
+    if flag("meta") {
+        parts.push("Super".to_string());
+    }
+    if parts.is_empty() {
+        return None;
+    }
+
+    let main = match key {
+        " " => "Space".to_string(),
+        "ArrowDown" => "Down".to_string(),
+        "ArrowUp" => "Up".to_string(),
+        "ArrowLeft" => "Left".to_string(),
+        "ArrowRight" => "Right".to_string(),
+        single if single.chars().count() == 1 => single.to_uppercase(),
+        named => named.to_string(),
+    };
+    parts.push(main);
+    Some(parts.join("+"))
+}
+
+/// (Re)register the global window-toggle hotkey from stored settings.
+/// Only this shortcut is ever registered, so resetting first is correct.
+/// A taken binding (another app owns it) warns and keeps running.
+fn refresh_global_toggle_shortcut(app: &tauri::AppHandle, database_path: &std::path::Path) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let _ = app.global_shortcut().unregister_all();
+
+    let binding = ClipboardStore::open(database_path)
+        .ok()
+        .and_then(|store| store.get_setting("keyboard_shortcuts").ok().flatten())
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .and_then(|settings| settings.get("toggle_window").cloned());
+    let Some(binding) = binding else {
+        return;
+    };
+    if binding
+        .get("key")
+        .and_then(|key| key.as_str())
+        .unwrap_or("")
+        .is_empty()
+    {
+        // Unbound by choice: stay silent.
+        return;
+    }
+
+    match toggle_window_accelerator(&binding) {
+        Some(accelerator) => {
+            if let Err(error) = app.global_shortcut().register(accelerator.as_str()) {
+                eprintln!("could not register global window toggle (is another app using it?): {error}");
+            }
+        }
+        None => eprintln!("no usable global window toggle binding configured"),
+    }
+}
+
+#[cfg(test)]
+mod global_shortcut_tests {
+    use super::toggle_window_accelerator;
+    use serde_json::json;
+
+    #[test]
+    fn builds_alt_shift_v_accelerator() {
+        let binding = json!({ "key": "v", "ctrl": false, "shift": true, "alt": true, "meta": false });
+        assert_eq!(
+            toggle_window_accelerator(&binding).as_deref(),
+            Some("Alt+Shift+V")
+        );
+    }
+
+    #[test]
+    fn uppercases_single_keys_and_maps_space() {
+        let binding = json!({ "key": "g", "ctrl": true, "shift": false, "alt": false, "meta": false });
+        assert_eq!(
+            toggle_window_accelerator(&binding).as_deref(),
+            Some("CommandOrControl+G")
+        );
+        let binding = json!({ "key": " ", "ctrl": true, "shift": false, "alt": false, "meta": false });
+        assert_eq!(
+            toggle_window_accelerator(&binding).as_deref(),
+            Some("CommandOrControl+Space")
+        );
+    }
+
+    #[test]
+    fn refuses_bare_keys_and_empty_bindings() {
+        let binding = json!({ "key": "v", "ctrl": false, "shift": false, "alt": false, "meta": false });
+        assert_eq!(toggle_window_accelerator(&binding), None);
+        let binding = json!({ "key": "", "ctrl": true, "shift": false, "alt": false, "meta": false });
+        assert_eq!(toggle_window_accelerator(&binding), None);
+    }
+
+    #[test]
+    fn unbound_by_default() {
+        assert!(super::default_toggle_window().key.is_empty());
+    }
 }
 
 // ----------
@@ -1386,6 +1537,18 @@ fn restart_app(app: tauri::AppHandle) {
 /// Run the Clipbox desktop application.
 pub fn run() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    use tauri_plugin_global_shortcut::ShortcutState;
+                    if event.state == ShortcutState::Pressed {
+                        if let Some(window) = app.get_webview_window("main") {
+                            toggle_window_from_tray(&window);
+                        }
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
             let database_directory = app.path().app_data_dir()?;
             std::fs::create_dir_all(&database_directory)?;
@@ -1444,7 +1607,7 @@ pub fn run() {
                 ],
             )?;
             let app_handle = app.handle();
-            refresh_tray_recent_clips(&app_handle);
+            refresh_tray_recent_clips(app_handle);
 
             let mut tray_builder = tauri::tray::TrayIconBuilder::new()
                 .tooltip("Clipbox")
@@ -1554,6 +1717,10 @@ pub fn run() {
                     }
                 });
             }
+
+            // Register the global window-toggle hotkey from stored settings.
+            let app_handle = app.handle();
+            refresh_global_toggle_shortcut(app_handle, &database_path);
 
             Ok(())
         })

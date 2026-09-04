@@ -65,6 +65,7 @@ export interface ShortcutSettings {
   toggle_pin: KeyBinding;
   delete_entry: KeyBinding;
   clear_escape: KeyBinding;
+  toggle_window: KeyBinding;
 }
 
 export interface PrivacySettings {
@@ -83,6 +84,7 @@ export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   toggle_pin: { key: "p", ctrl: false, shift: false, alt: false, meta: false, label: "P" },
   delete_entry: { key: "Delete", ctrl: false, shift: false, alt: false, meta: false, label: "Delete" },
   clear_escape: { key: "Escape", ctrl: false, shift: false, alt: false, meta: false, label: "Escape" },
+  toggle_window: { key: "", ctrl: false, shift: false, alt: false, meta: false, label: "Not bound" },
 };
 
 export function formatKeyBinding(e: KeyboardEvent): KeyBinding | null {
@@ -138,6 +140,7 @@ const SHORTCUT_ACTIONS: { id: keyof ShortcutSettings; label: string; description
   { id: "toggle_pin", label: "Toggle Pin", description: "Pins or unpins the currently focused entry" },
   { id: "delete_entry", label: "Delete Item", description: "Deletes the currently focused entry" },
   { id: "clear_escape", label: "Clear / Dismiss", description: "Clears active search or unselects card" },
+  { id: "toggle_window", label: "Show / Hide Window", description: "Toggles the app window from anywhere, even when Clipbox is in the tray" },
 ];
 
 interface SettingsModalProps {
@@ -319,6 +322,29 @@ export function SettingsModal({
       window.removeEventListener("keydown", handleKeyDown, true);
     };
   }, [recordingAction, shortcuts, onShortcutsChange]);
+
+  const clearBinding = async (id: keyof ShortcutSettings) => {
+    const cleared: KeyBinding = {
+      key: "",
+      ctrl: false,
+      shift: false,
+      alt: false,
+      meta: false,
+      label: "Not bound",
+    };
+    const updated = { ...shortcuts, [id]: cleared };
+    setShortcuts(updated);
+    setRecordingAction(null);
+    setShortcutConflict(null);
+    try {
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await invoke("set_shortcut_settings", { settings: updated });
+      }
+      onShortcutsChange?.(updated);
+    } catch (err) {
+      console.error("Failed to clear shortcut", err);
+    }
+  };
 
   const handleResetShortcuts = async () => {
     try {
@@ -840,21 +866,33 @@ export function SettingsModal({
                       <p className="text-[11px] text-muted-foreground">{action.description}</p>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShortcutConflict(null);
-                        setRecordingAction(isRecording ? null : action.id);
-                      }}
-                      className={`min-w-[85px] text-center rounded border px-2.5 py-1 font-mono text-[11px] transition-all cursor-pointer ${
-                        isRecording
-                          ? "border-primary bg-primary/10 text-primary animate-pulse ring-2 ring-primary/30"
-                          : "bg-muted hover:border-primary/50 text-foreground"
-                      }`}
-                      title="Click to rebind shortcut"
-                    >
-                      {isRecording ? "Press key..." : binding?.label || "Unset"}
-                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {binding?.key ? (
+                        <button
+                          type="button"
+                          onClick={() => void clearBinding(action.id)}
+                          className="rounded border border-transparent p-1 text-muted-foreground hover:text-foreground hover:border-primary/50 transition-colors cursor-pointer"
+                          title="Clear binding (leave unbound)"
+                        >
+                          <X className="size-3" />
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShortcutConflict(null);
+                          setRecordingAction(isRecording ? null : action.id);
+                        }}
+                        className={`min-w-[85px] text-center rounded border px-2.5 py-1 font-mono text-[11px] transition-all cursor-pointer ${
+                          isRecording
+                            ? "border-primary bg-primary/10 text-primary animate-pulse ring-2 ring-primary/30"
+                            : "bg-muted hover:border-primary/50 text-foreground"
+                        }`}
+                        title="Click to rebind shortcut"
+                      >
+                        {isRecording ? "Press key..." : binding?.label || "Unset"}
+                      </button>
+                    </div>
                   </div>
                 );
               })}
