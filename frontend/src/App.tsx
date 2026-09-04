@@ -378,6 +378,9 @@ export default function App() {
               }
               return [event.payload, ...prev];
             });
+            // Fresh captures land on page 1; navigate there so they stay
+            // visible when browsing older pages. No-op when already there.
+            setPage(1);
           });
 
           unlistenBump = await listen<ClipboardEntry>("clipboard://entry-bumped", (event) => {
@@ -388,6 +391,7 @@ export default function App() {
               const filtered = prev.filter((e) => e.id !== event.payload.id);
               return [event.payload, ...filtered];
             });
+            setPage(1);
           });
 
           unlistenPause = await listen<boolean>("clipboard://monitoring-paused-changed", (event) => {
