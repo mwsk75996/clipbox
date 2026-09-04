@@ -261,6 +261,7 @@ export default function App() {
   const [isMonitoringPaused, setIsMonitoringPaused] = React.useState<boolean>(false);
 
   const searchInputRef = React.useRef<HTMLInputElement>(null);
+  const feedScrollRef = React.useRef<HTMLDivElement | null>(null);
   const inFlightDeletionsRef = React.useRef<Set<number>>(new Set());
   const lastFetchTimeRef = React.useRef<number>(0);
   const toastIdRef = React.useRef<number>(0);
@@ -682,6 +683,13 @@ export default function App() {
     }
   };
 
+  const scrollFeedToTop = () => {
+    const viewport = feedScrollRef.current?.querySelector("[data-radix-scroll-area-viewport]");
+    if (viewport) {
+      viewport.scrollTop = 0;
+    }
+  };
+
   const clearFilters = () => {
     setSelectedApp("all");
     setSelectedType("all");
@@ -689,6 +697,7 @@ export default function App() {
     setDateRange(undefined);
     setIsFilterOpen(false);
     setPage(1);
+    scrollFeedToTop();
   };
 
   const enterDeletedView = () => {
@@ -926,16 +935,14 @@ export default function App() {
         return;
       }
 
-      // Configurable Nav Up shortcut (active feed only)
+      // Configurable Nav Up shortcut (active feed only, clamps to the list)
       if (matchesBinding(event, shortcuts.nav_up) && !showDeleted) {
         event.preventDefault();
         lastKeyboardNavTimeRef.current = Date.now();
+        if (paginatedEntries.length === 0) return;
         setFocusedIndex((prev) => {
-          if (prev === null || prev === 0) {
-            searchInputRef.current?.focus();
-            return null;
-          }
-          return prev - 1;
+          if (prev === null) return paginatedEntries.length - 1;
+          return Math.max(prev - 1, 0);
         });
         return;
       }
@@ -947,6 +954,7 @@ export default function App() {
         setPage((prev) =>
           Math.min(Math.max(prev + (event.key === "ArrowRight" ? 1 : -1), 1), totalPages)
         );
+        scrollFeedToTop();
         return;
       }
 
@@ -1238,6 +1246,7 @@ export default function App() {
                 setEntriesPerPage(value);
                 setPage(1);
                 setFocusedIndex(null);
+                scrollFeedToTop();
               }}
             />
           </div>
@@ -1344,9 +1353,9 @@ export default function App() {
             </div>
           ) : (
             <div className="relative flex-1 w-full min-h-0 flex flex-col overflow-hidden">
-              <ScrollArea className="flex-1 w-full h-full">
+              <ScrollArea ref={feedScrollRef} className="flex-1 w-full h-full">
                 <div className="max-w-4xl w-full mx-auto px-6 pt-5 pb-20 space-y-3">
-                {paginatedEntries.map((entry, index) => {
+                  {paginatedEntries.map((entry, index) => {
                   const content = stripLeadingEmptyLines(entry.content);
                   const lines = content.split(/\r?\n/);
                   const isExpandable = lines.length > 1 || content.length > 90;
@@ -1695,6 +1704,7 @@ export default function App() {
                 onClick={() => {
                   setFocusedIndex(null);
                   setPage((prev) => Math.max(prev - 1, 1));
+                  scrollFeedToTop();
                 }}
                 disabled={safePage <= 1}
                 className="size-7 rounded-md"
@@ -1714,6 +1724,7 @@ export default function App() {
                 onClick={() => {
                   setFocusedIndex(null);
                   setPage((prev) => Math.min(prev + 1, totalPages));
+                  scrollFeedToTop();
                 }}
                 disabled={safePage >= totalPages}
                 className="size-7 rounded-md"
