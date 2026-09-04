@@ -65,6 +65,7 @@ export interface ShortcutSettings {
   toggle_pin: KeyBinding;
   delete_entry: KeyBinding;
   clear_escape: KeyBinding;
+  toggle_window: KeyBinding;
 }
 
 export interface PrivacySettings {
@@ -83,6 +84,7 @@ export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   toggle_pin: { key: "p", ctrl: false, shift: false, alt: false, meta: false, label: "P" },
   delete_entry: { key: "Delete", ctrl: false, shift: false, alt: false, meta: false, label: "Delete" },
   clear_escape: { key: "Escape", ctrl: false, shift: false, alt: false, meta: false, label: "Escape" },
+  toggle_window: { key: "v", ctrl: false, shift: true, alt: true, meta: false, label: "Alt + Shift + V" },
 };
 
 export function formatKeyBinding(e: KeyboardEvent): KeyBinding | null {
@@ -138,6 +140,7 @@ const SHORTCUT_ACTIONS: { id: keyof ShortcutSettings; label: string; description
   { id: "toggle_pin", label: "Toggle Pin", description: "Pins or unpins the currently focused entry" },
   { id: "delete_entry", label: "Delete Item", description: "Deletes the currently focused entry" },
   { id: "clear_escape", label: "Clear / Dismiss", description: "Clears active search or unselects card" },
+  { id: "toggle_window", label: "Show / Hide Window", description: "Toggles the app window from anywhere, even when Clipbox is in the tray" },
 ];
 
 interface SettingsModalProps {
