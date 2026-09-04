@@ -987,13 +987,14 @@ pub struct ShortcutSettings {
 }
 
 fn default_toggle_window() -> KeyBinding {
+    // Unbound by default: the user opts into a global hotkey explicitly.
     KeyBinding {
-        key: "v".into(),
+        key: "".into(),
         ctrl: false,
-        shift: true,
-        alt: true,
+        shift: false,
+        alt: false,
         meta: false,
-        label: "Alt + Shift + V".into(),
+        label: "Not bound".into(),
     }
 }
 
@@ -1290,14 +1291,25 @@ fn refresh_global_toggle_shortcut(app: &tauri::AppHandle, database_path: &std::p
 
     let _ = app.global_shortcut().unregister_all();
 
-    let accelerator = ClipboardStore::open(database_path)
+    let binding = ClipboardStore::open(database_path)
         .ok()
         .and_then(|store| store.get_setting("keyboard_shortcuts").ok().flatten())
         .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
-        .and_then(|settings| settings.get("toggle_window").cloned())
-        .and_then(|binding| toggle_window_accelerator(&binding));
+        .and_then(|settings| settings.get("toggle_window").cloned());
+    let Some(binding) = binding else {
+        return;
+    };
+    if binding
+        .get("key")
+        .and_then(|key| key.as_str())
+        .unwrap_or("")
+        .is_empty()
+    {
+        // Unbound by choice: stay silent.
+        return;
+    }
 
-    match accelerator {
+    match toggle_window_accelerator(&binding) {
         Some(accelerator) => {
             if let Err(error) = app.global_shortcut().register(accelerator.as_str()) {
                 eprintln!("could not register global window toggle (is another app using it?): {error}");
@@ -1341,6 +1353,11 @@ mod global_shortcut_tests {
         assert_eq!(toggle_window_accelerator(&binding), None);
         let binding = json!({ "key": "", "ctrl": true, "shift": false, "alt": false, "meta": false });
         assert_eq!(toggle_window_accelerator(&binding), None);
+    }
+
+    #[test]
+    fn unbound_by_default() {
+        assert!(super::default_toggle_window().key.is_empty());
     }
 }
 
