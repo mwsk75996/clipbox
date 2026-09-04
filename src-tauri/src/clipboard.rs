@@ -402,6 +402,7 @@ fn check_clipboard(
                             let _ = store.bump_entry(existing_id, &metadata);
                             if let Ok(Some(entry)) = store.get_entry(existing_id) {
                                 let _ = app.emit("clipboard://entry-bumped", crate::ClipboardEntry::from(entry));
+                                crate::refresh_tray_recent_clips(app);
                             }
                             *previous_files_hash = Some(files.hash);
                             *previous_image_hash = None;
@@ -439,6 +440,7 @@ fn check_clipboard(
                                 source_url: None,
                             };
                             let _ = app.emit("clipboard://new-entry", entry);
+                            crate::refresh_tray_recent_clips(app);
                         }
                         Err(error) => eprintln!("could not store clipboard file: {error}"),
                     }
@@ -495,6 +497,7 @@ fn check_clipboard(
                             let _ = store.bump_entry(existing_id, &metadata);
                             if let Ok(Some(entry)) = store.get_entry(existing_id) {
                                 let _ = app.emit("clipboard://entry-bumped", crate::ClipboardEntry::from(entry));
+                                crate::refresh_tray_recent_clips(app);
                             }
                             *previous_image_hash = Some(img.raw_bytes_sample_hash);
                             *previous_files_hash = None;
@@ -532,6 +535,7 @@ fn check_clipboard(
                                 source_url: metadata.source_url,
                             };
                             let _ = app.emit("clipboard://new-entry", entry);
+                            crate::refresh_tray_recent_clips(app);
                         }
                         Err(error) => eprintln!("could not store clipboard image: {error}"),
                     }
@@ -582,6 +586,7 @@ fn check_clipboard(
                             let _ = store.bump_entry(existing_id, &metadata);
                             if let Ok(Some(entry)) = store.get_entry(existing_id) {
                                 let _ = app.emit("clipboard://entry-bumped", crate::ClipboardEntry::from(entry));
+                                crate::refresh_tray_recent_clips(app);
                             }
                             *previous_text = Some(cleaned.to_string());
                             *previous_image_hash = None;
@@ -619,6 +624,7 @@ fn check_clipboard(
                                 source_url: metadata.source_url,
                             };
                             let _ = app.emit("clipboard://new-entry", entry);
+                            crate::refresh_tray_recent_clips(app);
                         }
                         Err(error) => eprintln!("could not store clipboard text: {error}"),
                     }
