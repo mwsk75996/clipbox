@@ -530,6 +530,14 @@ export function SettingsModal({
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
         await invoke("set_ocr_language", { language: value });
+        const ocr = await invoke<{
+          available: boolean;
+          language: string;
+          languages: string[];
+          selected: string;
+        }>("get_ocr_status");
+        setOcrStatus(ocr);
+        setOcrLanguage(ocr.selected || "auto");
       }
     } catch (err) {
       console.error("Failed to update OCR language", err);
