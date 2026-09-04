@@ -22,27 +22,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
 import type { ClipboardEntry } from "../App";
 import { ImageAnnotator } from "./image-editor/image-annotator";
-
-interface OcrBox {
-  t: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-const isOcrBox = (value: unknown): value is OcrBox => {
-  if (typeof value !== "object" || value === null) return false;
-  const box = value as Record<string, unknown>;
-  return (
-    typeof box.t === "string" &&
-    typeof box.x === "number" &&
-    typeof box.y === "number" &&
-    typeof box.w === "number" &&
-    typeof box.h === "number" &&
-    [box.x, box.y, box.w, box.h].every((n) => Number.isFinite(n))
-  );
-};
+import { matchOcrBoxes, type OcrBox } from "@/lib/ocr";
 
 interface ImageLightboxProps {
   entry: ClipboardEntry | null;
@@ -78,22 +58,11 @@ export function ImageLightbox({
   const prevIsOpenRef = React.useRef(false);
 
   // OCR word boxes matching the current feed search, overlaid on the image.
-  // Memoized since renders happen on every zoom/pan frame. Multi-word
-  // queries match per-word boxes on any token, mirroring substring search.
-  const matchedBoxes = React.useMemo<OcrBox[]>(() => {
-    const tokens = searchQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    if (tokens.length === 0 || !entry?.ocrBoxes) return [];
-    try {
-      const parsed: unknown = JSON.parse(entry.ocrBoxes);
-      if (!Array.isArray(parsed)) return [];
-      return parsed.filter(
-        (box): box is OcrBox =>
-          isOcrBox(box) && tokens.some((token) => box.t.toLowerCase().includes(token))
-      );
-    } catch {
-      return [];
-    }
-  }, [entry?.ocrBoxes, searchQuery]);
+  // Memoized since renders happen on every zoom/pan frame.
+  const matchedBoxes = React.useMemo<OcrBox[]>(
+    () => matchOcrBoxes(entry?.ocrBoxes, searchQuery),
+    [entry?.ocrBoxes, searchQuery]
+  );
 
   // Reset zoom, pan, and edit state ONLY when modal opens afresh or when switching to a different clip
   React.useEffect(() => {
