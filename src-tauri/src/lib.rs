@@ -600,6 +600,35 @@ fn set_close_behavior(state: tauri::State<'_, AppState>, behavior: String) -> Re
 }
 
 // ----------
+// Entries Per Page Setting Commands
+// Description: Queries and updates how many history entries render per feed page.
+// ----------
+
+const VALID_ENTRIES_PER_PAGE: [&str; 4] = ["10", "25", "50", "100"];
+
+#[tauri::command]
+fn get_entries_per_page(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    Ok(store
+        .get_setting("entries_per_page")
+        .unwrap_or_default()
+        .unwrap_or_else(|| "25".into()))
+}
+
+#[tauri::command]
+fn set_entries_per_page(state: tauri::State<'_, AppState>, per_page: String) -> Result<(), String> {
+    if !VALID_ENTRIES_PER_PAGE.contains(&per_page.as_str()) {
+        return Err(format!("invalid entries per page: {per_page}"));
+    }
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    store
+        .set_setting("entries_per_page", &per_page)
+        .map_err(|error| format!("could not save entries per page setting: {error}"))
+}
+
+// ----------
 // Self-Update Commands
 // Description: Version query plus GitHub Releases download/install flow: stream the setup asset to temp with progress events, then silent-install and relaunch.
 // ----------
@@ -1567,6 +1596,8 @@ pub fn run() {
             show_window,
             get_close_behavior,
             set_close_behavior,
+            get_entries_per_page,
+            set_entries_per_page,
             get_app_version,
             download_update,
             install_update,
