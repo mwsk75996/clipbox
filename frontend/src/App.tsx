@@ -92,6 +92,7 @@ export interface ClipboardEntry {
   filesData?: string | null;
   sourceUrl?: string | null;
   ocrText?: string | null;
+  ocrBoxes?: string | null;
 }
 
 export interface DeletedClipboardEntry {
@@ -1783,6 +1784,7 @@ export default function App() {
         isOpen={previewEntry !== null}
         onClose={() => setPreviewEntry(null)}
         formatTimestamp={formatTimestamp}
+        searchQuery={searchQuery}
       />
 
       {/* Close behavior prompt (titlebar X, or Alt+F4 in "ask" mode) */}

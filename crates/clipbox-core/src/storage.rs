@@ -35,6 +35,7 @@ pub struct ClipboardEntry {
     pub files_data: Option<String>,
     pub source_url: Option<String>,
     pub ocr_text: Option<String>,
+    pub ocr_boxes: Option<String>,
 }
 
 /// An archived clipboard item awaiting restore, permanent deletion, or purge.
@@ -147,6 +148,7 @@ impl ClipboardStore {
             ("files_data", "files_data TEXT"),
             ("source_url", "source_url TEXT"),
             ("ocr_text", "ocr_text TEXT"),
+            ("ocr_boxes", "ocr_boxes TEXT"),
         ] {
             if !Self::has_column(&connection, column)? {
                 connection.execute(
@@ -344,7 +346,7 @@ impl ClipboardStore {
     /// Return the newest stored entries first, prioritizing pinned entries.
     pub fn recent_entries(&self, limit: u32) -> Result<Vec<ClipboardEntry>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, ocr_text
+            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, ocr_text, ocr_boxes
              FROM clipboard_entries
              ORDER BY is_pinned DESC, copied_at DESC, id DESC
              LIMIT ?1",
@@ -366,6 +368,7 @@ impl ClipboardStore {
                 files_data: row.get(11)?,
                 source_url: row.get(12)?,
                 ocr_text: row.get(13)?,
+                ocr_boxes: row.get(14)?,
             })
         })?;
 
@@ -375,7 +378,7 @@ impl ClipboardStore {
     /// Return a single stored entry by its ID.
     pub fn get_entry(&self, id: i64) -> Result<Option<ClipboardEntry>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, ocr_text
+            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, ocr_text, ocr_boxes
              FROM clipboard_entries
              WHERE id = ?1",
         )?;
@@ -396,6 +399,7 @@ impl ClipboardStore {
                 files_data: row.get(11)?,
                 source_url: row.get(12)?,
                 ocr_text: row.get(13)?,
+                ocr_boxes: row.get(14)?,
             })
         })?;
 
@@ -716,6 +720,15 @@ impl ClipboardStore {
         self.connection.execute(
             "UPDATE clipboard_entries SET ocr_text = ?1 WHERE id = ?2",
             params![ocr_text, id],
+        )?;
+        Ok(())
+    }
+
+    /// Store word bounding boxes (JSON array) for an entry.
+    pub fn set_ocr_boxes(&self, id: i64, ocr_boxes: &str) -> Result<()> {
+        self.connection.execute(
+            "UPDATE clipboard_entries SET ocr_boxes = ?1 WHERE id = ?2",
+            params![ocr_boxes, id],
         )?;
         Ok(())
     }
@@ -1386,5 +1399,25 @@ mod tests {
             .images_missing_ocr_text(10)
             .expect("missing scan should query")
             .is_empty());
+    }
+
+    #[test]
+    fn stores_and_queries_ocr_boxes() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        let fake_data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        let metadata = super::ClipboardMetadata::default();
+        let id = store
+            .add_image_entry(fake_data_url, "1x1", &metadata)
+            .expect("image should be stored");
+
+        let boxes = r#"[{"t":"hi","x":0.1,"y":0.2,"w":0.3,"h":0.05}]"#;
+        store
+            .set_ocr_boxes(id, boxes)
+            .expect("ocr boxes should store");
+        let entry = store
+            .get_entry(id)
+            .expect("entry should be queryable")
+            .expect("entry should exist");
+        assert_eq!(entry.ocr_boxes.as_deref(), Some(boxes));
     }
 }

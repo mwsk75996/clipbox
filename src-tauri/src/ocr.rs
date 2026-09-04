@@ -60,9 +60,12 @@ fn scan_entry_blocking(database_path: &Path, entry_id: i64) -> Result<(), String
         return Ok(());
     };
 
-    let text = recognize_data_url(&data_url, &preferred_language(&store))?;
+    let (text, boxes) = recognize_data_url(&data_url, &preferred_language(&store))?;
     store
         .set_ocr_text(entry_id, &text)
+        .map_err(|error| error.to_string())?;
+    store
+        .set_ocr_boxes(entry_id, &boxes)
         .map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -164,7 +167,7 @@ fn ocr_engine() -> Result<(windows::Media::Ocr::OcrEngine, String), String> {   
 }
 
 #[cfg(windows)]
-fn recognize_data_url(data_url: &str, preferred: &str) -> Result<String, String> {
+fn recognize_data_url(data_url: &str, preferred: &str) -> Result<(String, String), String> {
     use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
 
     let base64_str = data_url.split(',').next_back().unwrap_or(data_url);
@@ -249,6 +252,9 @@ fn recognize_data_url(data_url: &str, preferred: &str) -> Result<String, String>
         .map_err(|error| format!("failed to read text recognition result: {error}"))?;
 
     let mut text = String::new();
+    // Word boxes as fractions of the bitmap, so the frontend can overlay
+    // them at any display size without knowing the scan resolution.
+    let mut boxes = Vec::new();
     let lines = outcome
         .Lines()
         .map_err(|error| format!("failed to read text recognition result: {error}"))?;
@@ -267,17 +273,28 @@ fn recognize_data_url(data_url: &str, preferred: &str) -> Result<String, String>
             .Size()
             .map_err(|error| format!("failed to read text recognition result: {error}"))?
         {
+            let word = words
+                .GetAt(j)
+                .map_err(|error| format!("failed to read text recognition result: {error}"))?;
+            let word_text = word
+                .Text()
+                .map_err(|error| format!("failed to read text recognition result: {error}"))?
+                .to_string();
             if j > 0 {
                 line_text.push(' ');
             }
-            line_text.push_str(
-                &words
-                    .GetAt(j)
-                    .map_err(|error| format!("failed to read text recognition result: {error}"))?
-                    .Text()
-                    .map_err(|error| format!("failed to read text recognition result: {error}"))?
-                    .to_string(),
-            );
+            line_text.push_str(&word_text);
+            if !word_text.trim().is_empty() {
+                if let Ok(rect) = word.BoundingRect() {
+                    boxes.push(serde_json::json!({
+                        "t": word_text,
+                        "x": rect.X / width as f32,
+                        "y": rect.Y / height as f32,
+                        "w": rect.Width / width as f32,
+                        "h": rect.Height / height as f32,
+                    }));
+                }
+            }
         }
         if !line_text.trim().is_empty() {
             if !text.is_empty() {
@@ -286,10 +303,12 @@ fn recognize_data_url(data_url: &str, preferred: &str) -> Result<String, String>
             text.push_str(line_text.trim());
         }
     }
-    Ok(text)
+    let boxes_json =
+        serde_json::to_string(&boxes).map_err(|error| format!("failed to encode word boxes: {error}"))?;
+    Ok((text, boxes_json))
 }
 
 #[cfg(not(windows))]
-fn recognize_data_url(_data_url: &str, _preferred: &str) -> Result<String, String> {
+fn recognize_data_url(_data_url: &str, _preferred: &str) -> Result<(String, String), String> {
     Err("image text recognition is currently supported on Windows".into())
 }

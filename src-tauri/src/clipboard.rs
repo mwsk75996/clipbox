@@ -442,6 +442,7 @@ fn check_clipboard(
                                 files_data: Some(files.files_json),
                                 source_url: None,
                                 ocr_text: None,
+                                ocr_boxes: None,
                             };
                             let _ = app.emit("clipboard://new-entry", entry);
                             crate::refresh_tray_recent_clips(app);
@@ -539,6 +540,7 @@ fn check_clipboard(
                                 files_data: None,
                                 source_url: metadata.source_url,
                                 ocr_text: None,
+                                ocr_boxes: None,
                             };
                             let _ = app.emit("clipboard://new-entry", entry);
                             crate::refresh_tray_recent_clips(app);
@@ -629,6 +631,7 @@ fn check_clipboard(
                                 files_data: None,
                                 source_url: metadata.source_url,
                                 ocr_text: None,
+                                ocr_boxes: None,
                             };
                             let _ = app.emit("clipboard://new-entry", entry);
                             crate::refresh_tray_recent_clips(app);

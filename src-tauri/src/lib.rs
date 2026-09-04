@@ -36,6 +36,7 @@ pub struct ClipboardEntry {
     pub files_data: Option<String>,
     pub source_url: Option<String>,
     pub ocr_text: Option<String>,
+    pub ocr_boxes: Option<String>,
 }
 
 impl From<CoreClipboardEntry> for ClipboardEntry {
@@ -55,6 +56,7 @@ impl From<CoreClipboardEntry> for ClipboardEntry {
             files_data: entry.files_data,
             source_url: entry.source_url,
             ocr_text: entry.ocr_text,
+            ocr_boxes: entry.ocr_boxes,
         }
     }
 }
