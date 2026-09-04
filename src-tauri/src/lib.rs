@@ -846,12 +846,32 @@ fn install_update(app: tauri::AppHandle, path: String) -> Result<(), String> {
         let current = std::env::current_exe()
             .map_err(|error| format!("could not locate running executable: {error}"))?;
         // Silent-install, then reopen the fresh build. Our own exit lands
-        // first; the delay absorbs slow shutdowns and installer startup.
+        // first; the installer call blocks, so no timeout guessing is needed.
         // Hidden console: no window may flash for this background handoff.
-        let argv = updater_argv(&path, &current.display().to_string());
+        // The script travels base64-encoded: unlike cmd argv strings, the
+        // encoding alphabet has no spaces or quotes for any parser to mangle.
+        let script = updater_powershell_script(&path, &current.display().to_string());
+        let encoded: String = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(
+                script
+                    .encode_utf16()
+                    .flat_map(|unit| unit.to_le_bytes())
+                    .collect::<Vec<u8>>(),
+            )
+        };
         use std::os::windows::process::CommandExt;
-        std::process::Command::new("cmd")
-            .args(&argv)
+        std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-EncodedCommand",
+                &encoded,
+            ])
             .creation_flags(0x08000000)
             .spawn()
             .map_err(|error| format!("could not launch updater: {error}"))?;
@@ -866,36 +886,91 @@ fn install_update(app: tauri::AppHandle, path: String) -> Result<(), String> {
     }
 }
 
-/// Detached updater command line. cmd.exe strips the first and last quote of
-/// a bare /C string (mangling any inner quotes), so the documented safe form
-/// is used: /S /C with the whole script wrapped in one outer pair, leaving
-/// the inner quoting verbatim.
-fn updater_argv(installer: &str, target: &str) -> Vec<String> {
-    vec![
-        "/S".to_string(),
-        "/C".to_string(),
-        format!("\"timeout /t 10 /nobreak >nul & \"{installer}\" /S & start \"\" \"{target}\"\""),
-    ]
+/// Self-update handoff script: wait out our own shutdown, silent-install,
+/// reopen the fresh build, remove the staged installer. Single quotes delimit
+/// paths (PowerShell-safe); the caller transports this base64-encoded so no
+/// shell layer ever parses it.
+fn updater_powershell_script(installer: &str, target: &str) -> String {
+    let quote = |path: &str| path.replace('\'', "''");
+    format!(
+        "Start-Sleep -Seconds 5; & '{}' /S; Start-Process '{}'; Remove-Item '{}' -ErrorAction SilentlyContinue",
+        quote(installer),
+        quote(target),
+        quote(installer)
+    )
+}
+
+/// UTF-16LE base64 encoding PowerShell requires for -EncodedCommand.
+fn encode_powershell_script(script: &str) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(
+        script
+            .encode_utf16()
+            .flat_map(|unit| unit.to_le_bytes())
+            .collect::<Vec<u8>>(),
+    )
 }
 
 #[cfg(test)]
-mod updater_argv_tests {
-    use super::updater_argv;
+mod updater_script_tests {
+    use super::updater_powershell_script;
 
     #[test]
-    fn inner_quotes_survive_cmd_parsing() {
-        let argv = updater_argv(
+    fn script_quotes_paths_without_shell_metachars() {
+        let script = updater_powershell_script(
             r"C:\Temp\Clipbox_1.1.1_x64-setup.exe",
             r"C:\Users\matti\AppData\Local\Clipbox\clipbox.exe",
         );
         assert_eq!(
-            argv,
-            vec![
-                "/S".to_string(),
-                "/C".to_string(),
-                "\"timeout /t 10 /nobreak >nul & \"C:\\Temp\\Clipbox_1.1.1_x64-setup.exe\" /S & start \"\" \"C:\\Users\\matti\\AppData\\Local\\Clipbox\\clipbox.exe\"\"".to_string(),
-            ]
+            script,
+            r"Start-Sleep -Seconds 5; & 'C:\Temp\Clipbox_1.1.1_x64-setup.exe' /S; Start-Process 'C:\Users\matti\AppData\Local\Clipbox\clipbox.exe'; Remove-Item 'C:\Temp\Clipbox_1.1.1_x64-setup.exe' -ErrorAction SilentlyContinue"
         );
+    }
+
+    #[test]
+    fn script_escapes_embedded_quotes() {
+        let script = updater_powershell_script(
+            r"C:\Temp\O'Brien\setup.exe",
+            r"C:\Temp\app.exe",
+        );
+        assert!(script.contains(r"'C:\Temp\O''Brien\setup.exe'"));
+        assert!(!script.contains('\"'));
+    }
+    #[test]
+    #[cfg(windows)]
+    fn encoded_command_survives_process_spawn() {
+        use super::encode_powershell_script;
+
+        // Space-containing path: exactly what broke the cmd/argv handoff.
+        let marker = std::env::temp_dir().join("clipbox updater transport marker.txt");
+        let _ = std::fs::remove_file(&marker);
+        let script = format!(
+            "New-Item '{}' -ItemType File -Force",
+            marker.display().to_string().replace('\'', "''")
+        );
+        let encoded = encode_powershell_script(&script);
+
+        use std::os::windows::process::CommandExt;
+        let status = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-EncodedCommand",
+                &encoded,
+            ])
+            .creation_flags(0x08000000)
+            .status()
+            .expect("powershell should launch");
+        assert!(status.success());
+        assert!(
+            marker.is_file(),
+            "encoded script with a space-containing path must execute"
+        );
+        let _ = std::fs::remove_file(&marker);
     }
 }
 
