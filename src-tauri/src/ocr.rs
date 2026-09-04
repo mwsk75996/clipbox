@@ -28,7 +28,7 @@ pub fn backfill_missing(database_path: PathBuf) {
                 return;
             }
         };
-        let ids = store.images_missing_ocr_text(50).unwrap_or_default();
+        let ids = store.images_missing_ocr_data(50).unwrap_or_default();
         for id in ids {
             if let Err(error) = scan_entry_blocking(&database_path, id) {
                 eprintln!("could not OCR image entry {id}: {error}");

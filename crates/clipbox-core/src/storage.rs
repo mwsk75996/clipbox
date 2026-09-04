@@ -733,11 +733,12 @@ impl ClipboardStore {
         Ok(())
     }
 
-    /// Ids of image entries never scanned for text, oldest first.
-    pub fn images_missing_ocr_text(&self, limit: u32) -> Result<Vec<i64>> {
+    /// Ids of image entries missing OCR text or word boxes, oldest first.
+    /// Rows scanned before boxes existed (text present, boxes missing) heal here.
+    pub fn images_missing_ocr_data(&self, limit: u32) -> Result<Vec<i64>> {
         let mut statement = self.connection.prepare(
             "SELECT id FROM clipboard_entries
-             WHERE entry_type = 'image' AND ocr_text IS NULL
+             WHERE entry_type = 'image' AND (ocr_text IS NULL OR ocr_boxes IS NULL)
              ORDER BY id ASC
              LIMIT ?1",
         )?;
@@ -1365,15 +1366,18 @@ mod tests {
             .expect("image should be stored");
 
         assert_eq!(
-            store.images_missing_ocr_text(10).expect("missing scan should query"),
+            store.images_missing_ocr_data(10).expect("missing scan should query"),
             vec![id]
         );
 
         store
             .set_ocr_text(id, "hello world")
             .expect("ocr text should store");
+        store
+            .set_ocr_boxes(id, "[]")
+            .expect("ocr boxes should store");
         assert!(store
-            .images_missing_ocr_text(10)
+            .images_missing_ocr_data(10)
             .expect("missing scan should query")
             .is_empty());
 
@@ -1395,8 +1399,9 @@ mod tests {
 
         // Empty string (found nothing) still counts as scanned.
         store.set_ocr_text(id, "").expect("ocr text should store");
+        store.set_ocr_boxes(id, "[]").expect("ocr boxes should store");
         assert!(store
-            .images_missing_ocr_text(10)
+            .images_missing_ocr_data(10)
             .expect("missing scan should query")
             .is_empty());
     }
@@ -1412,8 +1417,21 @@ mod tests {
 
         let boxes = r#"[{"t":"hi","x":0.1,"y":0.2,"w":0.3,"h":0.05}]"#;
         store
+            .set_ocr_text(id, "hi")
+            .expect("ocr text should store");
+        // Text present but boxes missing still counts as unscanned (heals
+        // rows archived before boxes existed).
+        assert_eq!(
+            store.images_missing_ocr_data(10).expect("missing scan should query"),
+            vec![id]
+        );
+        store
             .set_ocr_boxes(id, boxes)
             .expect("ocr boxes should store");
+        assert!(store
+            .images_missing_ocr_data(10)
+            .expect("missing scan should query")
+            .is_empty());
         let entry = store
             .get_entry(id)
             .expect("entry should be queryable")

@@ -78,15 +78,17 @@ export function ImageLightbox({
   const prevIsOpenRef = React.useRef(false);
 
   // OCR word boxes matching the current feed search, overlaid on the image.
-  // Memoized since renders happen on every zoom/pan frame.
+  // Memoized since renders happen on every zoom/pan frame. Multi-word
+  // queries match per-word boxes on any token, mirroring substring search.
   const matchedBoxes = React.useMemo<OcrBox[]>(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query || !entry?.ocrBoxes) return [];
+    const tokens = searchQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0 || !entry?.ocrBoxes) return [];
     try {
       const parsed: unknown = JSON.parse(entry.ocrBoxes);
       if (!Array.isArray(parsed)) return [];
       return parsed.filter(
-        (box): box is OcrBox => isOcrBox(box) && box.t.toLowerCase().includes(query)
+        (box): box is OcrBox =>
+          isOcrBox(box) && tokens.some((token) => box.t.toLowerCase().includes(token))
       );
     } catch {
       return [];
