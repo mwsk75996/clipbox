@@ -1726,7 +1726,7 @@ export default function App() {
       <footer className="border-t bg-card/60 backdrop-blur px-6 py-1.5 shrink-0">
         <div className="max-w-4xl mx-auto grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-[11px] text-muted-foreground">
           <span className="select-none justify-self-start">{appVersion ? `v${appVersion}` : ""}</span>
-          {!showDeleted && (
+          {!showDeleted ? (
             <div className="flex items-center gap-1.5 justify-self-center">
               <Button
                 variant="ghost"
@@ -1763,6 +1763,8 @@ export default function App() {
                 <ChevronRight className="size-3.5" />
               </Button>
             </div>
+          ) : (
+            <div />
           )}
           <div className="justify-self-end">
           {appVersion && updateStatus.phase === "ready" ? (
