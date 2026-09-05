@@ -1260,6 +1260,13 @@ export default function App() {
                 setPage(1);
                 fetchDeletedEntries();
               }}
+              onImportComplete={() => {
+                inFlightDeletionsRef.current.clear();
+                setPage(1);
+                setFocusedIndex(null);
+                scrollFeedToTop();
+                void Promise.all([fetchEntries(), fetchDeletedEntries()]);
+              }}
               shortcuts={shortcuts}
               onShortcutsChange={setShortcuts}
               isMonitoringPaused={isMonitoringPaused}

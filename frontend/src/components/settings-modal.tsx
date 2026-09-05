@@ -19,6 +19,8 @@ import {
   X,
   RotateCcw,
   AlertCircle,
+  Download,
+  Upload,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -145,6 +147,7 @@ const SHORTCUT_ACTIONS: { id: keyof ShortcutSettings; label: string; description
 
 interface SettingsModalProps {
   onClearHistory?: () => void;
+  onImportComplete?: () => void;
   shortcuts?: ShortcutSettings;
   onShortcutsChange?: (shortcuts: ShortcutSettings) => void;
   isMonitoringPaused?: boolean;
@@ -156,6 +159,7 @@ interface SettingsModalProps {
 
 export function SettingsModal({
   onClearHistory,
+  onImportComplete,
   shortcuts: externalShortcuts,
   onShortcutsChange,
   isMonitoringPaused: externalIsMonitoringPaused,
@@ -193,6 +197,14 @@ export function SettingsModal({
   });
   const [dbPath, setDbPath] = React.useState("%APPDATA%\\com.palethea.clipbox\\clipbox.sqlite3");
   const [copiedPath, setCopiedPath] = React.useState(false);
+  const [backupStats, setBackupStats] = React.useState<{
+    entryCount: number;
+    deletedCount: number;
+    approxBytes: number;
+  } | null>(null);
+  const [exportingBackup, setExportingBackup] = React.useState(false);
+  const [importingBackup, setImportingBackup] = React.useState(false);
+  const [backupNotice, setBackupNotice] = React.useState<string | null>(null);
   const [prunedNotice, setPrunedNotice] = React.useState<number | null>(null);
   const [deletedRetention, setDeletedRetention] = React.useState(() => {
     return localStorage.getItem("clipbox:deletedRetention") || "7days";
@@ -266,6 +278,17 @@ export function SettingsModal({
 
           const realPath = await invoke<string>("get_database_path");
           setDbPath(realPath);
+
+          try {
+            const stats = await invoke<{
+              entryCount: number;
+              deletedCount: number;
+              approxBytes: number;
+            }>("backup_stats");
+            setBackupStats(stats);
+          } catch {
+            setBackupStats(null);
+          }
 
           const realRetention = await invoke<string>("get_retention_limit");
           setRetentionLimit(realRetention);
@@ -626,6 +649,77 @@ export function SettingsModal({
       console.error("Failed to clear history", err);
     } finally {
       setClearing(false);
+    }
+  };
+
+  const formatBackupBytes = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1048576).toFixed(1)} MB`;
+  };
+
+  const refreshBackupStats = async () => {
+    try {
+      const stats = await invoke<{
+        entryCount: number;
+        deletedCount: number;
+        approxBytes: number;
+      }>("backup_stats");
+      setBackupStats(stats);
+    } catch {
+      setBackupStats(null);
+    }
+  };
+
+  const handleExportBackup = async () => {
+    setExportingBackup(true);
+    setBackupNotice(null);
+    try {
+      const now = new Date();
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const defaultFilename = `clipbox-backup-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}.json`;
+      const result = await invoke<{
+        path: string;
+        bytes: number;
+        entryCount: number;
+        deletedCount: number;
+      } | null>("export_backup", { defaultFilename });
+      if (result) {
+        setBackupNotice(
+          `Exported ${result.entryCount} entries + ${result.deletedCount} archived (${formatBackupBytes(result.bytes)}) to ${result.path}`
+        );
+      }
+    } catch (err) {
+      setBackupNotice(`Export failed: ${err}`);
+    } finally {
+      setExportingBackup(false);
+    }
+  };
+
+  const handleImportBackup = async () => {
+    setImportingBackup(true);
+    setBackupNotice(null);
+    try {
+      const result = await invoke<{
+        entriesAdded: number;
+        entriesSkipped: number;
+        deletedAdded: number;
+        deletedSkipped: number;
+        settingsRestored: number;
+      } | null>("import_backup");
+      if (result) {
+        setBackupNotice(
+          `Imported ${result.entriesAdded} entries + ${result.deletedAdded} archived ` +
+            `(${result.entriesSkipped + result.deletedSkipped} already present, ${result.settingsRestored} settings restored). ` +
+            `Reopen Settings to see restored preferences.`
+        );
+        onImportComplete?.();
+        void refreshBackupStats();
+      }
+    } catch (err) {
+      setBackupNotice(`Import failed: ${err}`);
+    } finally {
+      setImportingBackup(false);
     }
   };
 
@@ -1204,6 +1298,43 @@ export function SettingsModal({
                   Open Directory
                 </Button>
               </div>
+            </div>
+
+            {/* Backup & Restore */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Backup & Restore</label>
+              <p className="text-xs text-muted-foreground">
+                {backupStats
+                  ? `${backupStats.entryCount} entries + ${backupStats.deletedCount} archived (~${formatBackupBytes(backupStats.approxBytes)} payload). Images embed inline, so screenshot-heavy libraries produce a large file.`
+                  : "Export full history, archive, pins, and settings to a portable file."}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleExportBackup}
+                  disabled={exportingBackup || importingBackup}
+                  className="h-8 text-xs gap-1.5 shrink-0"
+                >
+                  <Download className="size-3.5" />
+                  {exportingBackup ? "Exporting..." : "Export Backup"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleImportBackup}
+                  disabled={exportingBackup || importingBackup}
+                  className="h-8 text-xs gap-1.5 shrink-0"
+                >
+                  <Upload className="size-3.5" />
+                  {importingBackup ? "Importing..." : "Import Backup"}
+                </Button>
+              </div>
+              {backupNotice && (
+                <div className="text-xs text-muted-foreground break-all">
+                  {backupNotice}
+                </div>
+              )}
             </div>
           </div>
 

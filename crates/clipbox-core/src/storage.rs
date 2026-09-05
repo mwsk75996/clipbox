@@ -771,6 +771,247 @@ impl ClipboardStore {
         )?;
         Ok(())
     }
+
+    // ----------
+    // Backup Export & Import
+    // Description: Full-library dump helpers plus a transactional merge import. Identical records are skipped (pin upgraded when the backup copy is pinned), timestamps and OCR data are preserved, settings are restored verbatim, and retention pruning is deliberately not applied to imported rows.
+    // ----------
+
+    /// Every stored entry, oldest first, for backup export.
+    pub fn all_entries(&self) -> Result<Vec<ClipboardEntry>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, ocr_text, ocr_boxes
+             FROM clipboard_entries
+             ORDER BY id ASC",
+        )?;
+        let entries = statement.query_map([], Self::map_clipboard_entry)?;
+
+        entries.collect()
+    }
+
+    /// Every archived record, oldest first, for backup export.
+    pub fn all_deleted_entries(&self) -> Result<Vec<DeletedEntry>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, original_id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, deleted_at
+             FROM deleted_entries
+             ORDER BY id ASC",
+        )?;
+        let entries = statement.query_map([], Self::map_deleted_entry)?;
+
+        entries.collect()
+    }
+
+    /// Every app setting ordered by key, for backup export.
+    pub fn all_settings(&self) -> Result<Vec<(String, String)>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT key, value FROM app_settings ORDER BY key ASC")?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+
+        rows.collect()
+    }
+
+    /// Rough byte size of the live + archive text payloads, shown as the
+    /// pre-export size note (images ride inline as base64 in the file).
+    pub fn backup_payload_bytes(&self) -> Result<i64> {
+        let live: Option<i64> = self.connection.query_row(
+            "SELECT SUM(LENGTH(content) + LENGTH(COALESCE(image_data, '')) + LENGTH(COALESCE(files_data, '')) + LENGTH(COALESCE(ocr_text, '')) + LENGTH(COALESCE(ocr_boxes, ''))) FROM clipboard_entries",
+            [],
+            |row| row.get(0),
+        )?;
+        let archived: Option<i64> = self.connection.query_row(
+            "SELECT SUM(LENGTH(content) + LENGTH(COALESCE(image_data, '')) + LENGTH(COALESCE(files_data, ''))) FROM deleted_entries",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(live.unwrap_or(0) + archived.unwrap_or(0))
+    }
+
+    fn map_clipboard_entry(row: &rusqlite::Row<'_>) -> Result<ClipboardEntry> {
+        let is_pinned_int: i32 = row.get(7)?;
+        Ok(ClipboardEntry {
+            id: row.get(0)?,
+            content: row.get(1)?,
+            copied_at: row.get(2)?,
+            source_app: row.get(3)?,
+            source_process: row.get(4)?,
+            window_title: row.get(5)?,
+            app_icon: row.get(6)?,
+            is_pinned: is_pinned_int != 0,
+            entry_type: row.get(8).unwrap_or_else(|_| "text".into()),
+            image_data: row.get(9)?,
+            image_dimensions: row.get(10)?,
+            files_data: row.get(11)?,
+            source_url: row.get(12)?,
+            ocr_text: row.get(13)?,
+            ocr_boxes: row.get(14)?,
+        })
+    }
+
+    /// Duplicate lookup against the archive using the same matchers as the
+    /// live tables: stripped text content, exact image payload, exact files JSON.
+    pub fn find_existing_deleted(&self, entry: &DeletedEntry) -> Result<Option<i64>> {
+        Self::find_backup_match(
+            &self.connection,
+            "deleted_entries",
+            &entry.entry_type,
+            &entry.content,
+            entry.image_data.as_deref(),
+            entry.files_data.as_deref(),
+        )
+    }
+
+    /// Shared backup matcher over either live or archive table. `IS` (not `=`)
+    /// keeps NULL payloads comparable so corrupt rows fail closed as new.
+    fn find_backup_match(
+        connection: &Connection,
+        table: &str,
+        entry_type: &str,
+        content: &str,
+        image_data: Option<&str>,
+        files_data: Option<&str>,
+    ) -> Result<Option<i64>> {
+        let (predicate, payload): (&str, &str) = match entry_type {
+            "image" => ("entry_type = 'image' AND image_data IS ?1", image_data.unwrap_or("")),
+            "file" => ("entry_type = 'file' AND files_data IS ?1", files_data.unwrap_or("")),
+            _ => ("entry_type = 'text' AND content = ?1", content),
+        };
+        // Mirror the live text matcher normalization so re-imports dedupe.
+        let normalized;
+        let payload = if entry_type != "image" && entry_type != "file" {
+            normalized = strip_leading_empty_lines(payload).to_string();
+            normalized.as_str()
+        } else {
+            payload
+        };
+        let sql = format!("SELECT id FROM {table} WHERE {predicate} ORDER BY id DESC LIMIT 1");
+        let mut statement = connection.prepare(&sql)?;
+        let mut rows = statement.query([payload])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Merge backup records into this database inside a single transaction.
+    /// Returns per-table added/skipped counts. `original_id` values are kept
+    /// verbatim as provenance (nothing queries them functionally).
+    pub fn import_backup(
+        &mut self,
+        entries: &[ClipboardEntry],
+        deleted: &[DeletedEntry],
+        settings: &[(String, String)],
+    ) -> Result<ImportCounts> {
+        let transaction = self.connection.transaction()?;
+        let mut counts = ImportCounts::default();
+
+        for entry in entries {
+            let existing = Self::find_backup_match(
+                &transaction,
+                "clipboard_entries",
+                &entry.entry_type,
+                &entry.content,
+                entry.image_data.as_deref(),
+                entry.files_data.as_deref(),
+            )?;
+            match existing {
+                Some(id) => {
+                    counts.entries_skipped += 1;
+                    if entry.is_pinned {
+                        transaction.execute(
+                            "UPDATE clipboard_entries SET is_pinned = 1 WHERE id = ?1 AND is_pinned = 0",
+                            [id],
+                        )?;
+                    }
+                }
+                None => {
+                    transaction.execute(
+                        "INSERT INTO clipboard_entries
+                            (content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, ocr_text, ocr_boxes)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                        params![
+                            entry.content,
+                            entry.copied_at,
+                            entry.source_app.as_deref(),
+                            entry.source_process.as_deref(),
+                            entry.window_title.as_deref(),
+                            entry.app_icon.as_deref(),
+                            i32::from(entry.is_pinned),
+                            entry.entry_type,
+                            entry.image_data.as_deref(),
+                            entry.image_dimensions.as_deref(),
+                            entry.files_data.as_deref(),
+                            entry.source_url.as_deref(),
+                            entry.ocr_text.as_deref(),
+                            entry.ocr_boxes.as_deref(),
+                        ],
+                    )?;
+                    counts.entries_added += 1;
+                }
+            }
+        }
+
+        for record in deleted {
+            let existing = Self::find_backup_match(
+                &transaction,
+                "deleted_entries",
+                &record.entry_type,
+                &record.content,
+                record.image_data.as_deref(),
+                record.files_data.as_deref(),
+            )?;
+            match existing {
+                Some(_) => counts.deleted_skipped += 1,
+                None => {
+                    transaction.execute(
+                        "INSERT INTO deleted_entries
+                            (original_id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, deleted_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                        params![
+                            record.original_id,
+                            record.content,
+                            record.copied_at,
+                            record.source_app.as_deref(),
+                            record.source_process.as_deref(),
+                            record.window_title.as_deref(),
+                            record.app_icon.as_deref(),
+                            i32::from(record.is_pinned),
+                            record.entry_type,
+                            record.image_data.as_deref(),
+                            record.image_dimensions.as_deref(),
+                            record.files_data.as_deref(),
+                            record.source_url.as_deref(),
+                            record.deleted_at,
+                        ],
+                    )?;
+                    counts.deleted_added += 1;
+                }
+            }
+        }
+
+        for (key, value) in settings {
+            transaction.execute(
+                "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [key, value],
+            )?;
+            counts.settings_restored += 1;
+        }
+
+        transaction.commit()?;
+        Ok(counts)
+    }
+}
+
+/// Outcome counts for a backup import: rows merged versus skipped as duplicates.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ImportCounts {
+    pub entries_added: usize,
+    pub entries_skipped: usize,
+    pub deleted_added: usize,
+    pub deleted_skipped: usize,
+    pub settings_restored: usize,
 }
 
 // ----------
@@ -1437,5 +1678,108 @@ mod tests {
             .expect("entry should be queryable")
             .expect("entry should exist");
         assert_eq!(entry.ocr_boxes.as_deref(), Some(boxes));
+    }
+
+    #[test]
+    fn backup_import_round_trips_entries_archive_and_settings() {
+        let source = ClipboardStore::in_memory().expect("in-memory database should open");
+        let metadata = ClipboardMetadata::default();
+        let text_id = source
+            .add_entry("back me up", &metadata)
+            .expect("text should be stored");
+        source
+            .set_pinned(text_id, true)
+            .expect("pin should apply");
+        let image_url = "data:image/png;base64,aW1hZ2U=";
+        let image_id = source
+            .add_image_entry(image_url, "2x2", &metadata)
+            .expect("image should be stored");
+        source
+            .set_ocr_text(image_id, "hello")
+            .expect("ocr text should store");
+        source
+            .add_file_entry("2 files", r#"{"names":["a.txt"]}"#, &metadata)
+            .expect("file entry should be stored");
+        source
+            .soft_delete_entry(text_id)
+            .expect("soft delete should archive");
+        source
+            .set_setting("close_behavior", "hide")
+            .expect("setting should store");
+
+        let entries = source.all_entries().expect("entries should dump");
+        let deleted = source
+            .all_deleted_entries()
+            .expect("archive should dump");
+        let settings = source.all_settings().expect("settings should dump");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(deleted.len(), 1);
+        assert!(settings.contains(&("close_behavior".into(), "hide".into())));
+
+        let mut target = ClipboardStore::in_memory().expect("in-memory database should open");
+        let counts = target
+            .import_backup(&entries, &deleted, &settings)
+            .expect("import should succeed");
+        assert_eq!(
+            counts,
+            super::ImportCounts {
+                entries_added: 2,
+                entries_skipped: 0,
+                deleted_added: 1,
+                deleted_skipped: 0,
+                settings_restored: settings.len(),
+            }
+        );
+
+        // Pins, timestamps, OCR, archive state, and settings survive.
+        let live = target.all_entries().expect("entries should read back");
+        assert!(live.iter().any(|e| e.content == "2 files"));
+        let image = live
+            .iter()
+            .find(|e| e.entry_type == "image")
+            .expect("image should import");
+        assert_eq!(image.image_data.as_deref(), Some(image_url));
+        assert_eq!(image.ocr_text.as_deref(), Some("hello"));
+        let archive = target
+            .all_deleted_entries()
+            .expect("archive should read back");
+        assert_eq!(archive.len(), 1);
+        assert!(archive[0].is_pinned);
+        assert_eq!(
+            target
+                .get_setting("close_behavior")
+                .expect("setting should read back"),
+            Some("hide".into())
+        );
+
+        // Re-importing the same file is a no-op (pin upgrade path included).
+        let again = target
+            .import_backup(&entries, &deleted, &settings)
+            .expect("re-import should succeed");
+        assert_eq!(again.entries_added, 0);
+        assert_eq!(again.entries_skipped, 2);
+        assert_eq!(again.deleted_added, 0);
+        assert_eq!(again.deleted_skipped, 1);
+    }
+
+    #[test]
+    fn backup_import_upgrades_pin_on_duplicate() {
+        let mut store = ClipboardStore::in_memory().expect("in-memory database should open");
+        let metadata = ClipboardMetadata::default();
+        store
+            .add_entry("pin me later", &metadata)
+            .expect("text should be stored");
+
+        let mut backup = store.all_entries().expect("entries should dump");
+        assert_eq!(backup.len(), 1);
+        backup[0].is_pinned = true;
+
+        let counts = store
+            .import_backup(&backup, &[], &[])
+            .expect("import should succeed");
+        assert_eq!(counts.entries_added, 0);
+        assert_eq!(counts.entries_skipped, 1);
+        let live = store.all_entries().expect("entries should read back");
+        assert!(live[0].is_pinned);
     }
 }

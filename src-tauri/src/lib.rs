@@ -65,6 +65,7 @@ impl From<CoreClipboardEntry> for ClipboardEntry {
 #[serde(rename_all = "camelCase")]
 pub struct DeletedClipboardEntry {
     pub id: i64,
+    pub original_id: i64,
     pub content: String,
     pub copied_at: i64,
     pub source_app: Option<String>,
@@ -83,6 +84,53 @@ impl From<CoreDeletedEntry> for DeletedClipboardEntry {
     fn from(entry: CoreDeletedEntry) -> Self {
         Self {
             id: entry.id,
+            original_id: entry.original_id,
+            content: entry.content,
+            copied_at: entry.copied_at,
+            source_app: entry.source_app,
+            source_process: entry.source_process,
+            window_title: entry.window_title,
+            app_icon: entry.app_icon,
+            is_pinned: entry.is_pinned,
+            entry_type: entry.entry_type,
+            image_data: entry.image_data,
+            image_dimensions: entry.image_dimensions,
+            files_data: entry.files_data,
+            source_url: entry.source_url,
+            deleted_at: entry.deleted_at,
+        }
+    }
+}
+
+// Reverse mappings used by backup import (core ids are ignored; fresh ids
+// are assigned and timestamps preserved by the transactional merge).
+impl From<ClipboardEntry> for CoreClipboardEntry {
+    fn from(entry: ClipboardEntry) -> Self {
+        Self {
+            id: entry.id,
+            content: entry.content,
+            copied_at: entry.copied_at,
+            source_app: entry.source_app,
+            source_process: entry.source_process,
+            window_title: entry.window_title,
+            app_icon: entry.app_icon,
+            is_pinned: entry.is_pinned,
+            entry_type: entry.entry_type,
+            image_data: entry.image_data,
+            image_dimensions: entry.image_dimensions,
+            files_data: entry.files_data,
+            source_url: entry.source_url,
+            ocr_text: entry.ocr_text,
+            ocr_boxes: entry.ocr_boxes,
+        }
+    }
+}
+
+impl From<DeletedClipboardEntry> for CoreDeletedEntry {
+    fn from(entry: DeletedClipboardEntry) -> Self {
+        Self {
+            id: entry.id,
+            original_id: entry.original_id,
             content: entry.content,
             copied_at: entry.copied_at,
             source_app: entry.source_app,
@@ -1722,6 +1770,256 @@ fn save_image_to_file(
 }
 
 // ----------
+// Backup Export / Import Commands
+// Description: One-click portable backup of full history (live + archive), pins, metadata, and settings as a single versioned JSON document. Images ride inline as base64 (large for screenshot-heavy libraries; zip container is the documented upgrade path). Import merges transactionally so corrupt files fail clean.
+// ----------
+
+const BACKUP_FORMAT_VERSION: u32 = 1;
+
+/// Portable backup document. The envelope stays snake_case for file-format
+/// stability; record payloads reuse the camelCase IPC DTOs and are versioned
+/// by the envelope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClipboxBackup {
+    #[serde(rename = "clipbox_backup")]
+    pub format_version: u32,
+    pub app_version: String,
+    pub exported_at: i64,
+    pub entries: Vec<ClipboardEntry>,
+    pub deleted_entries: Vec<DeletedClipboardEntry>,
+    pub settings: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupStats {
+    pub entry_count: usize,
+    pub deleted_count: usize,
+    pub approx_bytes: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupExportResult {
+    pub path: String,
+    pub bytes: u64,
+    pub entry_count: usize,
+    pub deleted_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupImportResult {
+    pub entries_added: usize,
+    pub entries_skipped: usize,
+    pub deleted_added: usize,
+    pub deleted_skipped: usize,
+    pub settings_restored: usize,
+}
+
+/// Shared Win32 Save/Open picker (mirrors the image Save-As dialog pattern).
+#[cfg(windows)]
+fn win32_file_dialog(
+    window: &tauri::Window,
+    save: bool,
+    default_filename: &str,
+) -> Result<Option<String>, String> {
+    use windows::core::{w, PWSTR};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Controls::Dialogs::{
+        GetOpenFileNameW, GetSaveFileNameW, OFN_FILEMUSTEXIST, OFN_OVERWRITEPROMPT,
+        OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    };
+
+    let hwnd = match window.hwnd() {
+        Ok(handle) => HWND(handle.0 as _),
+        Err(_) => HWND(std::ptr::null_mut()),
+    };
+
+    let mut file_buf = [0u16; 1024];
+    if save {
+        let default_name_utf16: Vec<u16> = default_filename.encode_utf16().collect();
+        let copy_len = default_name_utf16.len().min(file_buf.len() - 1);
+        file_buf[..copy_len].copy_from_slice(&default_name_utf16[..copy_len]);
+    }
+
+    let filter = w!("Clipbox Backup (*.json)\0*.json\0All Files (*.*)\0*.*\0\0");
+
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: hwnd,
+        lpstrFilter: filter,
+        lpstrFile: PWSTR(file_buf.as_mut_ptr()),
+        nMaxFile: file_buf.len() as u32,
+        lpstrDefExt: w!("json"),
+        Flags: if save {
+            OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST
+        } else {
+            OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST
+        },
+        ..Default::default()
+    };
+
+    let success = unsafe {
+        if save {
+            GetSaveFileNameW(&mut ofn).as_bool()
+        } else {
+            GetOpenFileNameW(&mut ofn).as_bool()
+        }
+    };
+    if !success {
+        return Ok(None);
+    }
+
+    let end = file_buf.iter().position(|&c| c == 0).unwrap_or(file_buf.len());
+    Ok(Some(String::from_utf16_lossy(&file_buf[..end])))
+}
+
+#[tauri::command]
+fn backup_stats(state: tauri::State<'_, AppState>) -> Result<BackupStats, String> {
+    let store = ClipboardStore::open(&state.database_path)
+        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    let entry_count = store
+        .all_entries()
+        .map_err(|error| format!("could not read Clipbox entries: {error}"))?
+        .len();
+    let deleted_count = store
+        .all_deleted_entries()
+        .map_err(|error| format!("could not read Clipbox archive: {error}"))?
+        .len();
+    let approx_bytes = store
+        .backup_payload_bytes()
+        .map_err(|error| format!("could not estimate backup size: {error}"))?;
+
+    Ok(BackupStats {
+        entry_count,
+        deleted_count,
+        approx_bytes,
+    })
+}
+
+#[tauri::command]
+fn export_backup(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    default_filename: String,
+) -> Result<Option<BackupExportResult>, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = (&window, &default_filename);
+        return Err("Backup export is currently supported on Windows".into());
+    }
+
+    #[cfg(windows)]
+    {
+        let path = match win32_file_dialog(&window, true, &default_filename)? {
+            Some(selected) => selected,
+            None => return Ok(None),
+        };
+
+        let store = ClipboardStore::open(&state.database_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+        let backup = ClipboxBackup {
+            format_version: BACKUP_FORMAT_VERSION,
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            exported_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
+            entries: store
+                .all_entries()
+                .map_err(|error| format!("could not read Clipbox entries: {error}"))?
+                .into_iter()
+                .map(ClipboardEntry::from)
+                .collect(),
+            deleted_entries: store
+                .all_deleted_entries()
+                .map_err(|error| format!("could not read Clipbox archive: {error}"))?
+                .into_iter()
+                .map(DeletedClipboardEntry::from)
+                .collect(),
+            settings: store
+                .all_settings()
+                .map_err(|error| format!("could not read Clipbox settings: {error}"))?
+                .into_iter()
+                .collect(),
+        };
+        let entry_count = backup.entries.len();
+        let deleted_count = backup.deleted_entries.len();
+
+        let json = serde_json::to_string_pretty(&backup)
+            .map_err(|error| format!("could not serialize backup: {error}"))?;
+        std::fs::write(&path, &json)
+            .map_err(|error| format!("failed to write backup to {path}: {error}"))?;
+
+        Ok(Some(BackupExportResult {
+            path,
+            bytes: json.len() as u64,
+            entry_count,
+            deleted_count,
+        }))
+    }
+}
+
+#[tauri::command]
+fn import_backup(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<BackupImportResult>, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = (&window, &app);
+        return Err("Backup import is currently supported on Windows".into());
+    }
+
+    #[cfg(windows)]
+    {
+        let path = match win32_file_dialog(&window, false, "")? {
+            Some(selected) => selected,
+            None => return Ok(None),
+        };
+
+        let json = std::fs::read_to_string(&path)
+            .map_err(|error| format!("failed to read backup file {path}: {error}"))?;
+        let backup: ClipboxBackup = serde_json::from_str(&json)
+            .map_err(|error| format!("not a Clipbox backup file: {error}"))?;
+        if backup.format_version != BACKUP_FORMAT_VERSION {
+            return Err(format!(
+                "unsupported backup version {} (this Clipbox reads version {BACKUP_FORMAT_VERSION})",
+                backup.format_version
+            ));
+        }
+
+        let live: Vec<CoreClipboardEntry> =
+            backup.entries.into_iter().map(CoreClipboardEntry::from).collect();
+        let archived: Vec<CoreDeletedEntry> = backup
+            .deleted_entries
+            .into_iter()
+            .map(CoreDeletedEntry::from)
+            .collect();
+        let settings: Vec<(String, String)> = backup.settings.into_iter().collect();
+
+        // Transactional merge: a corrupt file fails clean, never half-imported.
+        let mut store = ClipboardStore::open(&state.database_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+        let counts = store
+            .import_backup(&live, &archived, &settings)
+            .map_err(|error| format!("could not import backup: {error}"))?;
+
+        refresh_tray_recent_clips(&app);
+
+        Ok(Some(BackupImportResult {
+            entries_added: counts.entries_added,
+            entries_skipped: counts.entries_skipped,
+            deleted_added: counts.deleted_added,
+            deleted_skipped: counts.deleted_skipped,
+            settings_restored: counts.settings_restored,
+        }))
+    }
+}
+
+// ----------
 // Save Edited Image Entry Command
 // Description: Persists an annotated or cropped image as a new entry in Clipbox SQLite storage, inheriting origin metadata from the source image, and emits clipboard://new-entry to update the feed.
 // ----------
@@ -2055,7 +2353,48 @@ pub fn run() {
             get_shortcut_settings,
             set_shortcut_settings,
             reset_shortcut_settings,
+            backup_stats,
+            export_backup,
+            import_backup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clipbox");
+}
+
+#[cfg(test)]
+mod backup_tests {
+    use super::*;
+
+    #[test]
+    fn backup_envelope_uses_versioned_snake_case_key() {
+        let document = ClipboxBackup {
+            format_version: BACKUP_FORMAT_VERSION,
+            app_version: "1.1.4".into(),
+            exported_at: 0,
+            entries: vec![],
+            deleted_entries: vec![],
+            settings: [("close_behavior".into(), "hide".into())]
+                .into_iter()
+                .collect(),
+        };
+        let json = serde_json::to_string(&document).expect("backup should serialize");
+        assert!(json.contains("\"clipbox_backup\":1"));
+        let parsed: ClipboxBackup = serde_json::from_str(&json).expect("backup should parse");
+        assert_eq!(parsed.format_version, BACKUP_FORMAT_VERSION);
+        assert_eq!(
+            parsed.settings.get("close_behavior").map(String::as_str),
+            Some("hide")
+        );
+    }
+
+    #[test]
+    fn backup_rejects_missing_or_wrong_version() {
+        let missing_version = r#"{"app_version":"1.1.4","exported_at":0,"entries":[],"deleted_entries":[],"settings":{}}"#;
+        assert!(serde_json::from_str::<ClipboxBackup>(missing_version).is_err());
+
+        let wrong_version = r#"{"clipbox_backup":999,"app_version":"1.1.4","exported_at":0,"entries":[],"deleted_entries":[],"settings":{}}"#;
+        let parsed: ClipboxBackup =
+            serde_json::from_str(wrong_version).expect("shape should parse");
+        assert_ne!(parsed.format_version, BACKUP_FORMAT_VERSION);
+    }
 }
