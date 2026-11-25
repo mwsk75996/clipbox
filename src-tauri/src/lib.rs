@@ -148,15 +148,45 @@ impl From<DeletedClipboardEntry> for CoreDeletedEntry {
     }
 }
 
-#[tauri::command]
-fn list_entries(state: tauri::State<'_, AppState>) -> Result<Vec<ClipboardEntry>, String> {
-    let store = ClipboardStore::open(&state.database_path)
-        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+// ----------
+// Async Feed & Lazy Image Commands
+// Description: Runs clipboard listing, on-demand image loading, and history
+// mutations off the Win32 main UI thread via spawn_blocking so large image
+// databases never freeze the window message pump.
+// ----------
 
-    store
-        .recent_entries(100)
-        .map(|entries| entries.into_iter().map(ClipboardEntry::from).collect())
-        .map_err(|error| format!("could not read Clipbox entries: {error}"))
+#[tauri::command]
+async fn list_entries(state: tauri::State<'_, AppState>) -> Result<Vec<ClipboardEntry>, String> {
+    let db_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+        store
+            .recent_entry_summaries(100)
+            .map(|entries| entries.into_iter().map(ClipboardEntry::from).collect())
+            .map_err(|error| format!("could not read Clipbox entries: {error}"))
+    })
+    .await
+    .map_err(|error| format!("could not read Clipbox entries: {error}"))?
+}
+
+#[tauri::command]
+async fn get_entry_image(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+) -> Result<Option<String>, String> {
+    let db_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+        store
+            .get_entry_image(id)
+            .map_err(|error| format!("could not read Clipbox image: {error}"))
+    })
+    .await
+    .map_err(|error| format!("could not read Clipbox image: {error}"))?
 }
 
 // ----------
@@ -165,18 +195,23 @@ fn list_entries(state: tauri::State<'_, AppState>) -> Result<Vec<ClipboardEntry>
 // ----------
 
 #[tauri::command]
-fn clear_entries(
+async fn clear_entries(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<usize, String> {
-    let store = ClipboardStore::open(&state.database_path)
-        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    let db_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
-    let archived = store
-        .clear_entries()
-        .map_err(|error| format!("could not clear Clipbox entries: {error}"))?;
-    refresh_tray_recent_clips(&app);
-    Ok(archived)
+        let archived = store
+            .clear_entries()
+            .map_err(|error| format!("could not clear Clipbox entries: {error}"))?;
+        refresh_tray_recent_clips(&app);
+        Ok(archived)
+    })
+    .await
+    .map_err(|error| format!("could not clear Clipbox entries: {error}"))?
 }
 
 // ----------
@@ -185,39 +220,44 @@ fn clear_entries(
 // ----------
 
 #[tauri::command]
-fn delete_entry(
+async fn delete_entry(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: i64,
 ) -> Result<String, String> {
-    let store = ClipboardStore::open(&state.database_path)
-        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    let db_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
-    let outcome = if deleted_retention_setting(&store) == "immediately" {
-        store
-            .delete_entry(id)
-            .map(|deleted| {
-                if deleted {
-                    "deleted".to_string()
-                } else {
-                    "missing".to_string()
-                }
-            })
-            .map_err(|error| format!("could not delete Clipbox entry: {error}"))?
-    } else {
-        store
-            .soft_delete_entry(id)
-            .map(|archived| {
-                if archived {
-                    "archived".to_string()
-                } else {
-                    "missing".to_string()
-                }
-            })
-            .map_err(|error| format!("could not archive Clipbox entry: {error}"))?
-    };
-    refresh_tray_recent_clips(&app);
-    Ok(outcome)
+        let outcome = if deleted_retention_setting(&store) == "immediately" {
+            store
+                .delete_entry(id)
+                .map(|deleted| {
+                    if deleted {
+                        "deleted".to_string()
+                    } else {
+                        "missing".to_string()
+                    }
+                })
+                .map_err(|error| format!("could not delete Clipbox entry: {error}"))?
+        } else {
+            store
+                .soft_delete_entry(id)
+                .map(|archived| {
+                    if archived {
+                        "archived".to_string()
+                    } else {
+                        "missing".to_string()
+                    }
+                })
+                .map_err(|error| format!("could not archive Clipbox entry: {error}"))?
+        };
+        refresh_tray_recent_clips(&app);
+        Ok(outcome)
+    })
+    .await
+    .map_err(|error| format!("could not delete Clipbox entry: {error}"))?
 }
 
 // ----------
@@ -252,53 +292,68 @@ fn purge_expired_deleted_entries(store: &ClipboardStore) -> usize {
 }
 
 #[tauri::command]
-fn list_deleted_entries(
+async fn list_deleted_entries(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<DeletedClipboardEntry>, String> {
-    let store = ClipboardStore::open(&state.database_path)
-        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    let db_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
-    store
-        .recent_deleted_entries(100)
-        .map(|entries| {
-            entries
-                .into_iter()
-                .map(DeletedClipboardEntry::from)
-                .collect()
-        })
-        .map_err(|error| format!("could not read deleted Clipbox entries: {error}"))
+        store
+            .recent_deleted_entry_summaries(100)
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(DeletedClipboardEntry::from)
+                    .collect()
+            })
+            .map_err(|error| format!("could not read deleted Clipbox entries: {error}"))
+    })
+    .await
+    .map_err(|error| format!("could not read deleted Clipbox entries: {error}"))?
 }
 
 #[tauri::command]
-fn restore_deleted_entry(
+async fn restore_deleted_entry(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: i64,
 ) -> Result<Option<i64>, String> {
-    let store = ClipboardStore::open(&state.database_path)
-        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    let db_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
-    let restored = store
-        .restore_deleted_entry(id)
-        .map_err(|error| format!("could not restore deleted Clipbox entry: {error}"))?;
-    refresh_tray_recent_clips(&app);
-    Ok(restored)
+        let restored = store
+            .restore_deleted_entry(id)
+            .map_err(|error| format!("could not restore deleted Clipbox entry: {error}"))?;
+        refresh_tray_recent_clips(&app);
+        Ok(restored)
+    })
+    .await
+    .map_err(|error| format!("could not restore deleted Clipbox entry: {error}"))?
 }
 
 #[tauri::command]
-fn delete_deleted_entry(
+async fn delete_deleted_entry(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: i64,
 ) -> Result<bool, String> {
-    let store = ClipboardStore::open(&state.database_path)
-        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    let db_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
-    let deleted = store
-        .hard_delete_entry(id)
-        .map_err(|error| format!("could not permanently delete Clipbox entry: {error}"))?;
-    refresh_tray_recent_clips(&app);
-    Ok(deleted)
+        let deleted = store
+            .hard_delete_entry(id)
+            .map_err(|error| format!("could not permanently delete Clipbox entry: {error}"))?;
+        refresh_tray_recent_clips(&app);
+        Ok(deleted)
+    })
+    .await
+    .map_err(|error| format!("could not permanently delete Clipbox entry: {error}"))?
 }
 
 #[tauri::command]
@@ -309,26 +364,31 @@ fn get_deleted_retention(state: tauri::State<'_, AppState>) -> Result<String, St
 }
 
 #[tauri::command]
-fn set_deleted_retention(
+async fn set_deleted_retention(
     state: tauri::State<'_, AppState>,
     retention: String,
 ) -> Result<usize, String> {
-    let store = ClipboardStore::open(&state.database_path)
-        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    let db_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
-    store
-        .set_setting("deleted_retention", &retention)
-        .map_err(|error| format!("could not save deleted retention setting: {error}"))?;
+        store
+            .set_setting("deleted_retention", &retention)
+            .map_err(|error| format!("could not save deleted retention setting: {error}"))?;
 
-    // Switching to "immediately" purges the whole archive at once; shorter
-    // timespans purge whatever is already past them.
-    if retention == "immediately" {
-        return store
-            .purge_deleted_entries_older_than(i64::MAX)
-            .map_err(|error| format!("could not purge deleted Clipbox entries: {error}"));
-    }
+        // Switching to "immediately" purges the whole archive at once; shorter
+        // timespans purge whatever is already past them.
+        if retention == "immediately" {
+            return store
+                .purge_deleted_entries_older_than(i64::MAX)
+                .map_err(|error| format!("could not purge deleted Clipbox entries: {error}"));
+        }
 
-    Ok(purge_expired_deleted_entries(&store))
+        Ok(purge_expired_deleted_entries(&store))
+    })
+    .await
+    .map_err(|error| format!("could not save deleted retention setting: {error}"))?
 }
 
 // ----------
@@ -337,13 +397,18 @@ fn set_deleted_retention(
 // ----------
 
 #[tauri::command]
-fn toggle_pinned(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, String> {
-    let store = ClipboardStore::open(&state.database_path)
-        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+async fn toggle_pinned(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, String> {
+    let db_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
-    store
-        .toggle_pinned(id)
-        .map_err(|error| format!("could not toggle pin status: {error}"))
+        store
+            .toggle_pinned(id)
+            .map_err(|error| format!("could not toggle pin status: {error}"))
+    })
+    .await
+    .map_err(|error| format!("could not toggle pin status: {error}"))?
 }
 
 // ----------
@@ -444,6 +509,7 @@ fn tray_clip_label(content: &str) -> String {
 
 /// Re-read the newest history entries into the fixed tray slots.
 /// Called on startup, on every capture, and after history mutations.
+/// Selects only `(id, content)` so inline image blobs are never scanned.
 pub(crate) fn refresh_tray_recent_clips(app: &tauri::AppHandle) {
     let db_path = match app.try_state::<AppState>() {
         Some(state) => state.database_path.clone(),
@@ -452,7 +518,7 @@ pub(crate) fn refresh_tray_recent_clips(app: &tauri::AppHandle) {
     let entries = ClipboardStore::open(&db_path)
         .map(|store| {
             store
-                .recent_entries(TRAY_RECENT_COUNT as u32)
+                .recent_tray_entries(TRAY_RECENT_COUNT as u32)
                 .unwrap_or_default()
         })
         .unwrap_or_default();
@@ -467,9 +533,9 @@ pub(crate) fn refresh_tray_recent_clips(app: &tauri::AppHandle) {
     ids.clear();
     for (slot, item) in tray.items.iter().enumerate() {
         match entries.get(slot) {
-            Some(entry) => {
-                ids.push(entry.id);
-                let _ = item.set_text(tray_clip_label(&entry.content));
+            Some((id, content)) => {
+                ids.push(*id);
+                let _ = item.set_text(tray_clip_label(content));
                 let _ = item.set_enabled(true);
             }
             None => {
@@ -1219,28 +1285,33 @@ fn get_retention_limit(state: tauri::State<'_, AppState>) -> Result<String, Stri
 }
 
 #[tauri::command]
-fn set_retention_limit(
+async fn set_retention_limit(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     limit: String,
 ) -> Result<usize, String> {
-    let store = ClipboardStore::open(&state.database_path)
-        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+    let db_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
 
-    store
-        .set_setting("retention_limit", &limit)
-        .map_err(|error| format!("could not save retention limit setting: {error}"))?;
+        store
+            .set_setting("retention_limit", &limit)
+            .map_err(|error| format!("could not save retention limit setting: {error}"))?;
 
-    let pruned = if limit == "unlimited" {
-        0
-    } else if let Ok(parsed) = limit.parse::<usize>() {
-        store.prune_entries(parsed).unwrap_or(0)
-    } else {
-        0
-    };
+        let pruned = if limit == "unlimited" {
+            0
+        } else if let Ok(parsed) = limit.parse::<usize>() {
+            store.prune_entries(parsed).unwrap_or(0)
+        } else {
+            0
+        };
 
-    refresh_tray_recent_clips(&app);
-    Ok(pruned)
+        refresh_tray_recent_clips(&app);
+        Ok(pruned)
+    })
+    .await
+    .map_err(|error| format!("could not save retention limit setting: {error}"))?
 }
 
 // ----------
@@ -1681,8 +1752,31 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
 // ----------
 
 #[tauri::command]
-fn copy_image_to_clipboard(data_url: String) -> Result<(), String> {
-    paste_image_data_url(&data_url)
+async fn copy_image_to_clipboard(data_url: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || paste_image_data_url(&data_url))
+        .await
+        .map_err(|error| format!("could not copy image to clipboard: {error}"))?
+}
+
+/// Copy a stored image entry directly from SQLite by ID, avoiding multi-MB
+/// base64 round-trips through the WebView IPC bridge.
+#[tauri::command]
+async fn copy_entry_image_to_clipboard(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    let db_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+        let data_url = store
+            .get_entry_image(id)
+            .map_err(|error| format!("could not read Clipbox image: {error}"))?
+            .ok_or_else(|| "image entry not found".to_string())?;
+        paste_image_data_url(&data_url)
+    })
+    .await
+    .map_err(|error| format!("could not copy image to clipboard: {error}"))?
 }
 
 // ----------
@@ -1700,24 +1794,11 @@ fn copy_files_to_clipboard(paths: Vec<String>) -> Result<(), String> {
 // Description: Decodes PNG data URL and displays standard Windows Save As dialog with .png filter, writing image bytes directly to the chosen local disk path.
 // ----------
 
-#[tauri::command]
-fn save_image_to_file(
-    window: tauri::Window,
-    data_url: String,
-    default_filename: String,
+fn write_png_with_save_dialog(
+    window: &tauri::Window,
+    png_bytes: &[u8],
+    default_filename: &str,
 ) -> Result<Option<String>, String> {
-    let base64_str = if let Some(idx) = data_url.find(',') {
-        &data_url[idx + 1..]
-    } else {
-        &data_url
-    };
-
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine;
-    let png_bytes = STANDARD
-        .decode(base64_str)
-        .map_err(|e| format!("failed to decode base64 image data: {e}"))?;
-
     #[cfg(windows)]
     {
         use windows::core::{w, PWSTR};
@@ -1757,7 +1838,7 @@ fn save_image_to_file(
         let end = file_buf.iter().position(|&c| c == 0).unwrap_or(file_buf.len());
         let selected_path = String::from_utf16_lossy(&file_buf[..end]);
 
-        std::fs::write(&selected_path, &png_bytes)
+        std::fs::write(&selected_path, png_bytes)
             .map_err(|e| format!("failed to save image to {selected_path}: {e}"))?;
 
         Ok(Some(selected_path))
@@ -1765,8 +1846,47 @@ fn save_image_to_file(
 
     #[cfg(not(windows))]
     {
+        let _ = (window, png_bytes, default_filename);
         Err("Save dialog is currently supported on Windows".into())
     }
+}
+
+#[tauri::command]
+async fn save_image_to_file(
+    window: tauri::Window,
+    data_url: String,
+    default_filename: String,
+) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let png_bytes = decode_image_data_url(&data_url)?;
+        write_png_with_save_dialog(&window, &png_bytes, &default_filename)
+    })
+    .await
+    .map_err(|error| format!("failed to save image: {error}"))?
+}
+
+/// Save a stored image entry directly from SQLite by ID without passing the
+/// base64 payload through the WebView IPC bridge.
+#[tauri::command]
+async fn save_entry_image_to_file(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    default_filename: String,
+) -> Result<Option<String>, String> {
+    let db_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+        let data_url = store
+            .get_entry_image(id)
+            .map_err(|error| format!("could not read Clipbox image: {error}"))?
+            .ok_or_else(|| "image entry not found".to_string())?;
+        let png_bytes = decode_image_data_url(&data_url)?;
+        write_png_with_save_dialog(&window, &png_bytes, &default_filename)
+    })
+    .await
+    .map_err(|error| format!("failed to save image: {error}"))?
 }
 
 // ----------
@@ -1876,146 +1996,159 @@ fn win32_file_dialog(
 }
 
 #[tauri::command]
-fn backup_stats(state: tauri::State<'_, AppState>) -> Result<BackupStats, String> {
-    let store = ClipboardStore::open(&state.database_path)
-        .map_err(|error| format!("could not open Clipbox database: {error}"))?;
-    let entry_count = store
-        .all_entries()
-        .map_err(|error| format!("could not read Clipbox entries: {error}"))?
-        .len();
-    let deleted_count = store
-        .all_deleted_entries()
-        .map_err(|error| format!("could not read Clipbox archive: {error}"))?
-        .len();
-    let approx_bytes = store
-        .backup_payload_bytes()
-        .map_err(|error| format!("could not estimate backup size: {error}"))?;
+async fn backup_stats(state: tauri::State<'_, AppState>) -> Result<BackupStats, String> {
+    let db_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+        let entry_count = store
+            .entry_count()
+            .map_err(|error| format!("could not count Clipbox entries: {error}"))?;
+        let deleted_count = store
+            .deleted_entry_count()
+            .map_err(|error| format!("could not count Clipbox archive: {error}"))?;
+        let approx_bytes = store
+            .backup_payload_bytes()
+            .map_err(|error| format!("could not estimate backup size: {error}"))?;
 
-    Ok(BackupStats {
-        entry_count,
-        deleted_count,
-        approx_bytes,
+        Ok(BackupStats {
+            entry_count,
+            deleted_count,
+            approx_bytes,
+        })
     })
+    .await
+    .map_err(|error| format!("could not estimate backup size: {error}"))?
 }
 
 #[tauri::command]
-fn export_backup(
+async fn export_backup(
     window: tauri::Window,
     state: tauri::State<'_, AppState>,
     default_filename: String,
 ) -> Result<Option<BackupExportResult>, String> {
     #[cfg(not(windows))]
     {
-        let _ = (&window, &default_filename);
+        let _ = (&window, &state, &default_filename);
         return Err("Backup export is currently supported on Windows".into());
     }
 
     #[cfg(windows)]
     {
-        let path = match win32_file_dialog(&window, true, &default_filename)? {
-            Some(selected) => selected,
-            None => return Ok(None),
-        };
+        let db_path = state.database_path.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let path = match win32_file_dialog(&window, true, &default_filename)? {
+                Some(selected) => selected,
+                None => return Ok(None),
+            };
 
-        let store = ClipboardStore::open(&state.database_path)
-            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
-        let backup = ClipboxBackup {
-            format_version: BACKUP_FORMAT_VERSION,
-            app_version: env!("CARGO_PKG_VERSION").to_string(),
-            exported_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64,
-            entries: store
-                .all_entries()
-                .map_err(|error| format!("could not read Clipbox entries: {error}"))?
-                .into_iter()
-                .map(ClipboardEntry::from)
-                .collect(),
-            deleted_entries: store
-                .all_deleted_entries()
-                .map_err(|error| format!("could not read Clipbox archive: {error}"))?
-                .into_iter()
-                .map(DeletedClipboardEntry::from)
-                .collect(),
-            settings: store
-                .all_settings()
-                .map_err(|error| format!("could not read Clipbox settings: {error}"))?
-                .into_iter()
-                .collect(),
-        };
-        let entry_count = backup.entries.len();
-        let deleted_count = backup.deleted_entries.len();
+            let store = ClipboardStore::open(&db_path)
+                .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+            let backup = ClipboxBackup {
+                format_version: BACKUP_FORMAT_VERSION,
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                exported_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
+                entries: store
+                    .all_entries()
+                    .map_err(|error| format!("could not read Clipbox entries: {error}"))?
+                    .into_iter()
+                    .map(ClipboardEntry::from)
+                    .collect(),
+                deleted_entries: store
+                    .all_deleted_entries()
+                    .map_err(|error| format!("could not read Clipbox archive: {error}"))?
+                    .into_iter()
+                    .map(DeletedClipboardEntry::from)
+                    .collect(),
+                settings: store
+                    .all_settings()
+                    .map_err(|error| format!("could not read Clipbox settings: {error}"))?
+                    .into_iter()
+                    .collect(),
+            };
+            let entry_count = backup.entries.len();
+            let deleted_count = backup.deleted_entries.len();
 
-        let json = serde_json::to_string_pretty(&backup)
-            .map_err(|error| format!("could not serialize backup: {error}"))?;
-        std::fs::write(&path, &json)
-            .map_err(|error| format!("failed to write backup to {path}: {error}"))?;
+            let json = serde_json::to_string_pretty(&backup)
+                .map_err(|error| format!("could not serialize backup: {error}"))?;
+            std::fs::write(&path, &json)
+                .map_err(|error| format!("failed to write backup to {path}: {error}"))?;
 
-        Ok(Some(BackupExportResult {
-            path,
-            bytes: json.len() as u64,
-            entry_count,
-            deleted_count,
-        }))
+            Ok(Some(BackupExportResult {
+                path,
+                bytes: json.len() as u64,
+                entry_count,
+                deleted_count,
+            }))
+        })
+        .await
+        .map_err(|error| format!("could not export backup: {error}"))?
     }
 }
 
 #[tauri::command]
-fn import_backup(
+async fn import_backup(
     app: tauri::AppHandle,
     window: tauri::Window,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<BackupImportResult>, String> {
     #[cfg(not(windows))]
     {
-        let _ = (&window, &app);
+        let _ = (&window, &app, &state);
         return Err("Backup import is currently supported on Windows".into());
     }
 
     #[cfg(windows)]
     {
-        let path = match win32_file_dialog(&window, false, "")? {
-            Some(selected) => selected,
-            None => return Ok(None),
-        };
+        let db_path = state.database_path.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let path = match win32_file_dialog(&window, false, "")? {
+                Some(selected) => selected,
+                None => return Ok(None),
+            };
 
-        let json = std::fs::read_to_string(&path)
-            .map_err(|error| format!("failed to read backup file {path}: {error}"))?;
-        let backup: ClipboxBackup = serde_json::from_str(&json)
-            .map_err(|error| format!("not a Clipbox backup file: {error}"))?;
-        if backup.format_version != BACKUP_FORMAT_VERSION {
-            return Err(format!(
-                "unsupported backup version {} (this Clipbox reads version {BACKUP_FORMAT_VERSION})",
-                backup.format_version
-            ));
-        }
+            let json = std::fs::read_to_string(&path)
+                .map_err(|error| format!("failed to read backup file {path}: {error}"))?;
+            let backup: ClipboxBackup = serde_json::from_str(&json)
+                .map_err(|error| format!("not a Clipbox backup file: {error}"))?;
+            if backup.format_version != BACKUP_FORMAT_VERSION {
+                return Err(format!(
+                    "unsupported backup version {} (this Clipbox reads version {BACKUP_FORMAT_VERSION})",
+                    backup.format_version
+                ));
+            }
 
-        let live: Vec<CoreClipboardEntry> =
-            backup.entries.into_iter().map(CoreClipboardEntry::from).collect();
-        let archived: Vec<CoreDeletedEntry> = backup
-            .deleted_entries
-            .into_iter()
-            .map(CoreDeletedEntry::from)
-            .collect();
-        let settings: Vec<(String, String)> = backup.settings.into_iter().collect();
+            let live: Vec<CoreClipboardEntry> =
+                backup.entries.into_iter().map(CoreClipboardEntry::from).collect();
+            let archived: Vec<CoreDeletedEntry> = backup
+                .deleted_entries
+                .into_iter()
+                .map(CoreDeletedEntry::from)
+                .collect();
+            let settings: Vec<(String, String)> = backup.settings.into_iter().collect();
 
-        // Transactional merge: a corrupt file fails clean, never half-imported.
-        let mut store = ClipboardStore::open(&state.database_path)
-            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
-        let counts = store
-            .import_backup(&live, &archived, &settings)
-            .map_err(|error| format!("could not import backup: {error}"))?;
+            // Transactional merge: a corrupt file fails clean, never half-imported.
+            let mut store = ClipboardStore::open(&db_path)
+                .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+            let counts = store
+                .import_backup(&live, &archived, &settings)
+                .map_err(|error| format!("could not import backup: {error}"))?;
 
-        refresh_tray_recent_clips(&app);
+            refresh_tray_recent_clips(&app);
 
-        Ok(Some(BackupImportResult {
-            entries_added: counts.entries_added,
-            entries_skipped: counts.entries_skipped,
-            deleted_added: counts.deleted_added,
-            deleted_skipped: counts.deleted_skipped,
-            settings_restored: counts.settings_restored,
-        }))
+            Ok(Some(BackupImportResult {
+                entries_added: counts.entries_added,
+                entries_skipped: counts.entries_skipped,
+                deleted_added: counts.deleted_added,
+                deleted_skipped: counts.deleted_skipped,
+                settings_restored: counts.settings_restored,
+            }))
+        })
+        .await
+        .map_err(|error| format!("could not import backup: {error}"))?
     }
 }
 
@@ -2025,24 +2158,35 @@ fn import_backup(
 // ----------
 
 #[tauri::command]
-fn save_edited_image_entry(
+async fn save_edited_image_entry(
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
     data_url: String,
     dimensions: String,
     source_entry_id: Option<i64>,
 ) -> Result<ClipboardEntry, String> {
-    let store = ClipboardStore::open(&state.database_path)
-        .map_err(|e| format!("could not open database: {e}"))?;
+    let db_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|e| format!("could not open database: {e}"))?;
 
-    let metadata = if let Some(source_id) = source_entry_id {
-        if let Ok(Some(source)) = store.get_entry(source_id) {
-            clipbox_core::ClipboardMetadata {
-                source_app: source.source_app.or(Some("Clipbox Editor".into())),
-                source_process: source.source_process,
-                window_title: Some("Annotated Image".into()),
-                app_icon: source.app_icon,
-                source_url: source.source_url,
+        let metadata = if let Some(source_id) = source_entry_id {
+            if let Ok(Some(source)) = store.get_entry(source_id) {
+                clipbox_core::ClipboardMetadata {
+                    source_app: source.source_app.or(Some("Clipbox Editor".into())),
+                    source_process: source.source_process,
+                    window_title: Some("Annotated Image".into()),
+                    app_icon: source.app_icon,
+                    source_url: source.source_url,
+                }
+            } else {
+                clipbox_core::ClipboardMetadata {
+                    source_app: Some("Clipbox Editor".into()),
+                    source_process: None,
+                    window_title: Some("Annotated Image".into()),
+                    app_icon: None,
+                    source_url: None,
+                }
             }
         } else {
             clipbox_core::ClipboardMetadata {
@@ -2052,29 +2196,25 @@ fn save_edited_image_entry(
                 app_icon: None,
                 source_url: None,
             }
-        }
-    } else {
-        clipbox_core::ClipboardMetadata {
-            source_app: Some("Clipbox Editor".into()),
-            source_process: None,
-            window_title: Some("Annotated Image".into()),
-            app_icon: None,
-            source_url: None,
-        }
-    };
+        };
 
-    let id = store
-        .add_image_entry(&data_url, &dimensions, &metadata)
-        .map_err(|e| format!("could not save image entry: {e}"))?;
+        let id = store
+            .add_image_entry(&data_url, &dimensions, &metadata)
+            .map_err(|e| format!("could not save image entry: {e}"))?;
 
-    let entry = store
-        .get_entry(id)
-        .map_err(|e| format!("could not get saved entry: {e}"))?
-        .ok_or_else(|| "entry not found after insert".to_string())?;
+        let entry = store
+            .get_entry(id)
+            .map_err(|e| format!("could not get saved entry: {e}"))?
+            .ok_or_else(|| "entry not found after insert".to_string())?;
 
-    let tauri_entry = ClipboardEntry::from(entry);
-    let _ = app.emit("clipboard://new-entry", tauri_entry.clone());
-    Ok(tauri_entry)
+        let mut tauri_entry = ClipboardEntry::from(entry);
+        tauri_entry.image_data = None;
+        let _ = app.emit("clipboard://new-entry", tauri_entry.clone());
+        refresh_tray_recent_clips(&app);
+        Ok(tauri_entry)
+    })
+    .await
+    .map_err(|e| format!("could not save image entry: {e}"))?
 }
 
 // ----------
@@ -2158,8 +2298,10 @@ pub fn run() {
                     &quit_item,
                 ],
             )?;
-            let app_handle = app.handle();
-            refresh_tray_recent_clips(app_handle);
+            let app_handle_for_tray = app.handle().clone();
+            std::thread::spawn(move || {
+                refresh_tray_recent_clips(&app_handle_for_tray);
+            });
 
             let mut tray_builder = tauri::tray::TrayIconBuilder::new()
                 .tooltip("Clipbox")
@@ -2191,7 +2333,10 @@ pub fn run() {
                     }
                     id if id.starts_with("paste-") => {
                         if let Ok(slot) = id["paste-".len()..].parse::<usize>() {
-                            paste_tray_clip(app, slot);
+                            let app_handle = app.clone();
+                            std::thread::spawn(move || {
+                                paste_tray_clip(&app_handle, slot);
+                            });
                         }
                     }
                     _ => {}
@@ -2255,18 +2400,15 @@ pub fn run() {
                 }
             }
 
-            // Purge expired Recently Deleted records on startup, then hourly
-            // while the app keeps running from the tray.
-            if let Ok(store) = ClipboardStore::open(&database_path) {
-                let _ = purge_expired_deleted_entries(&store);
-            }
+            // Purge expired Recently Deleted records on startup (off main thread),
+            // then hourly while the app keeps running from the tray.
             {
                 let database_path = database_path.clone();
                 std::thread::spawn(move || loop {
-                    std::thread::sleep(std::time::Duration::from_secs(3_600));
                     if let Ok(store) = ClipboardStore::open(&database_path) {
                         let _ = purge_expired_deleted_entries(&store);
                     }
+                    std::thread::sleep(std::time::Duration::from_secs(3_600));
                 });
             }
 
@@ -2304,6 +2446,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_entries,
+            get_entry_image,
             clear_entries,
             delete_entry,
             list_deleted_entries,
@@ -2330,6 +2473,7 @@ pub fn run() {
             exit_app,
             copy_to_clipboard,
             copy_image_to_clipboard,
+            copy_entry_image_to_clipboard,
             set_always_on_top,
             is_always_on_top,
             is_autostart_enabled,
@@ -2342,6 +2486,7 @@ pub fn run() {
             set_retention_limit,
             restart_app,
             save_image_to_file,
+            save_entry_image_to_file,
             save_edited_image_entry,
             copy_files_to_clipboard,
             open_in_explorer,

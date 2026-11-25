@@ -501,7 +501,10 @@ fn check_clipboard(
                         if let Ok(Some(existing_id)) = store.find_existing_image(&img.data_url) {
                             let _ = store.bump_entry(existing_id, &metadata);
                             if let Ok(Some(entry)) = store.get_entry(existing_id) {
-                                let _ = app.emit("clipboard://entry-bumped", crate::ClipboardEntry::from(entry));
+                                let mut payload = crate::ClipboardEntry::from(entry);
+                                // Keep live events lightweight; feed thumbnails lazy-load image_data by id.
+                                payload.image_data = None;
+                                let _ = app.emit("clipboard://entry-bumped", payload);
                                 crate::refresh_tray_recent_clips(app);
                             }
                             *previous_image_hash = Some(img.raw_bytes_sample_hash);
@@ -535,7 +538,7 @@ fn check_clipboard(
                                 app_icon: metadata.app_icon,
                                 is_pinned: false,
                                 entry_type: "image".into(),
-                                image_data: Some(img.data_url),
+                                image_data: None,
                                 image_dimensions: Some(img.dimensions),
                                 files_data: None,
                                 source_url: metadata.source_url,

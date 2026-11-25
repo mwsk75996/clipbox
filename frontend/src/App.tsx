@@ -36,6 +36,7 @@ import { Titlebar } from "@/components/titlebar";
 import { ImageLightbox } from "@/components/image-lightbox";
 import { FileEntryCard } from "@/components/file-entry-card";
 import { FeedImageThumb } from "@/components/feed-image-thumb";
+import { clearEntryImageCache } from "@/lib/image-cache";
 import { highlightCode, looksLikeCode } from "@/lib/code-highlight";
 import { DeletedEntryCard } from "@/components/deleted-entry-card";
 import { Button } from "@/components/ui/button";
@@ -269,6 +270,8 @@ export default function App() {
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const feedScrollRef = React.useRef<HTMLDivElement | null>(null);
   const inFlightDeletionsRef = React.useRef<Set<number>>(new Set());
+  const fetchInFlightRef = React.useRef<boolean>(false);
+  const fetchQueuedRef = React.useRef<boolean>(false);
   const lastFetchTimeRef = React.useRef<number>(0);
   const toastIdRef = React.useRef<number>(0);
   const updateBusyRef = React.useRef(false);
@@ -328,19 +331,29 @@ export default function App() {
     }
   };
 
-  // Fetch clipboard entries from Tauri IPC with in-flight deletion protection
+  // Fetch clipboard entries from Tauri IPC with in-flight coalescing and deletion protection
   const fetchEntries = React.useCallback(async () => {
-    lastFetchTimeRef.current = Date.now();
+    if (fetchInFlightRef.current) {
+      fetchQueuedRef.current = true;
+      return;
+    }
+    fetchInFlightRef.current = true;
     try {
-      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-        const result = await invoke<ClipboardEntry[]>("list_entries");
-        setEntries(result.filter((e) => !inFlightDeletionsRef.current.has(e.id)));
-      } else {
-        setEntries(PREVIEW_ENTRIES);
-      }
+      do {
+        fetchQueuedRef.current = false;
+        lastFetchTimeRef.current = Date.now();
+        if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+          const result = await invoke<ClipboardEntry[]>("list_entries");
+          setEntries(result.filter((e) => !inFlightDeletionsRef.current.has(e.id)));
+        } else {
+          setEntries(PREVIEW_ENTRIES);
+        }
+      } while (fetchQueuedRef.current);
     } catch (err) {
       console.error("Failed to fetch entries:", err);
       setEntries(PREVIEW_ENTRIES);
+    } finally {
+      fetchInFlightRef.current = false;
     }
   }, []);
 
@@ -387,7 +400,7 @@ export default function App() {
               ) {
                 return prev;
               }
-              return [event.payload, ...prev];
+              return [event.payload, ...prev].slice(0, 100);
             });
             // Fresh captures land on page 1; navigate there so they stay
             // visible when browsing older pages. No-op when already there.
@@ -542,10 +555,10 @@ export default function App() {
   const handleCopy = async (entry: ClipboardEntry, event?: React.MouseEvent) => {
     event?.stopPropagation();
     try {
-      if (entry.entryType === "image" && entry.imageData) {
+      if (entry.entryType === "image") {
         if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-          await invoke("copy_image_to_clipboard", { dataUrl: entry.imageData });
-        } else {
+          await invoke("copy_entry_image_to_clipboard", { id: entry.id });
+        } else if (entry.imageData) {
           const res = await fetch(entry.imageData);
           const blob = await res.blob();
           await navigator.clipboard.write([
@@ -636,6 +649,7 @@ export default function App() {
       inFlightDeletionsRef.current.delete(id);
     }
     if (synced) {
+      clearEntryImageCache();
       fetchEntries();
     }
   };
@@ -1256,12 +1270,14 @@ export default function App() {
             <SettingsModal
               onClearHistory={() => {
                 inFlightDeletionsRef.current.clear();
+                clearEntryImageCache();
                 setEntries([]);
                 setPage(1);
                 fetchDeletedEntries();
               }}
               onImportComplete={() => {
                 inFlightDeletionsRef.current.clear();
+                clearEntryImageCache();
                 setPage(1);
                 setFocusedIndex(null);
                 scrollFeedToTop();
@@ -1609,9 +1625,11 @@ export default function App() {
                             onCopyPaths={(e) => handleCopyPaths(entry, e)}
                             isCopiedPaths={copiedPathId === entry.id}
                           />
-                        ) : entry.entryType === "image" && entry.imageData ? (
+                        ) : entry.entryType === "image" ? (
                           <>
                           <FeedImageThumb
+                            entryId={entry.id}
+                            copiedAt={entry.copiedAt}
                             imageData={entry.imageData}
                             alt={entry.content}
                             boxesJson={entry.ocrBoxes}

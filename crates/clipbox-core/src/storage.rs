@@ -3,10 +3,15 @@
 // Description: SQLite-backed storage managing clipboard entries with source app metadata, process name, window title, and application icon.
 // ----------
 
+use std::collections::HashSet;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, Result};
+
+/// Schema version stored in SQLite's `PRAGMA user_version` header.
+/// Once migrated, subsequent opens skip DDL and PRAGMA table_info scans.
+const SCHEMA_VERSION: i64 = 1;
 
 /// Metadata captured along with a clipboard entry.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -94,84 +99,111 @@ impl ClipboardStore {
     }
 
     fn initialize(connection: Connection) -> Result<Self> {
-        connection.execute_batch(
-            "CREATE TABLE IF NOT EXISTS clipboard_entries (
-                id INTEGER PRIMARY KEY,
-                content TEXT NOT NULL,
-                copied_at INTEGER NOT NULL,
-                source_app TEXT,
-                source_process TEXT,
-                window_title TEXT,
-                app_icon TEXT,
-                is_pinned INTEGER NOT NULL DEFAULT 0,
-                entry_type TEXT NOT NULL DEFAULT 'text',
-                image_data TEXT,
-                image_dimensions TEXT,
-                files_data TEXT,
-                source_url TEXT
-            );
-            CREATE TABLE IF NOT EXISTS app_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS deleted_entries (
-                id INTEGER PRIMARY KEY,
-                original_id INTEGER NOT NULL,
-                content TEXT NOT NULL,
-                copied_at INTEGER NOT NULL,
-                source_app TEXT,
-                source_process TEXT,
-                window_title TEXT,
-                app_icon TEXT,
-                is_pinned INTEGER NOT NULL DEFAULT 0,
-                entry_type TEXT NOT NULL DEFAULT 'text',
-                image_data TEXT,
-                image_dimensions TEXT,
-                files_data TEXT,
-                source_url TEXT,
-                deleted_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_deleted_entries_deleted_at
-                ON deleted_entries(deleted_at);",
-        )?;
+        // Wait briefly on concurrent writes (monitor, OCR backfill, UI) instead
+        // of failing immediately with SQLITE_BUSY.
+        connection.busy_timeout(Duration::from_secs(5))?;
+        let _ = connection.query_row("PRAGMA journal_mode = WAL", [], |row| {
+            row.get::<_, String>(0)
+        });
+        let _ = connection.execute_batch("PRAGMA synchronous = NORMAL;");
 
-        // Keep databases created by earlier versions usable.
-        for (column, definition) in [
-            ("source_app", "source_app TEXT"),
-            ("source_process", "source_process TEXT"),
-            ("window_title", "window_title TEXT"),
-            ("app_icon", "app_icon TEXT"),
-            ("is_pinned", "is_pinned INTEGER NOT NULL DEFAULT 0"),
-            ("entry_type", "entry_type TEXT NOT NULL DEFAULT 'text'"),
-            ("image_data", "image_data TEXT"),
-            ("image_dimensions", "image_dimensions TEXT"),
-            ("files_data", "files_data TEXT"),
-            ("source_url", "source_url TEXT"),
-            ("ocr_text", "ocr_text TEXT"),
-            ("ocr_boxes", "ocr_boxes TEXT"),
-        ] {
-            if !Self::has_column(&connection, column)? {
-                connection.execute(
-                    &format!("ALTER TABLE clipboard_entries ADD COLUMN {definition}"),
-                    [],
-                )?;
+        let user_version: i64 =
+            connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+        if user_version < SCHEMA_VERSION {
+            connection.execute_batch(
+                "CREATE TABLE IF NOT EXISTS clipboard_entries (
+                    id INTEGER PRIMARY KEY,
+                    content TEXT NOT NULL,
+                    copied_at INTEGER NOT NULL,
+                    source_app TEXT,
+                    source_process TEXT,
+                    window_title TEXT,
+                    app_icon TEXT,
+                    is_pinned INTEGER NOT NULL DEFAULT 0,
+                    entry_type TEXT NOT NULL DEFAULT 'text',
+                    image_data TEXT,
+                    image_dimensions TEXT,
+                    files_data TEXT,
+                    source_url TEXT,
+                    ocr_text TEXT,
+                    ocr_boxes TEXT
+                );
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS deleted_entries (
+                    id INTEGER PRIMARY KEY,
+                    original_id INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    copied_at INTEGER NOT NULL,
+                    source_app TEXT,
+                    source_process TEXT,
+                    window_title TEXT,
+                    app_icon TEXT,
+                    is_pinned INTEGER NOT NULL DEFAULT 0,
+                    entry_type TEXT NOT NULL DEFAULT 'text',
+                    image_data TEXT,
+                    image_dimensions TEXT,
+                    files_data TEXT,
+                    source_url TEXT,
+                    deleted_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_deleted_entries_deleted_at
+                    ON deleted_entries(deleted_at);",
+            )?;
+
+            // Keep databases created by earlier versions usable with a single
+            // PRAGMA table_info pass instead of querying per column.
+            let existing_columns = Self::table_columns(&connection)?;
+            for (column, definition) in [
+                ("source_app", "source_app TEXT"),
+                ("source_process", "source_process TEXT"),
+                ("window_title", "window_title TEXT"),
+                ("app_icon", "app_icon TEXT"),
+                ("is_pinned", "is_pinned INTEGER NOT NULL DEFAULT 0"),
+                ("entry_type", "entry_type TEXT NOT NULL DEFAULT 'text'"),
+                ("image_data", "image_data TEXT"),
+                ("image_dimensions", "image_dimensions TEXT"),
+                ("files_data", "files_data TEXT"),
+                ("source_url", "source_url TEXT"),
+                ("ocr_text", "ocr_text TEXT"),
+                ("ocr_boxes", "ocr_boxes TEXT"),
+            ] {
+                if !existing_columns.contains(column) {
+                    connection.execute(
+                        &format!("ALTER TABLE clipboard_entries ADD COLUMN {definition}"),
+                        [],
+                    )?;
+                }
             }
+
+            // Composite feed-order index avoids full-table scans and temp B-tree
+            // sorts over inline image blobs on every open/focus/tray refresh.
+            connection.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_clipboard_entries_order
+                    ON clipboard_entries(is_pinned DESC, copied_at DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_clipboard_entries_type_id
+                    ON clipboard_entries(entry_type, id DESC);",
+            )?;
+
+            connection.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         }
 
         Ok(Self { connection })
     }
 
-    fn has_column(connection: &Connection, column: &str) -> Result<bool> {
+    fn table_columns(connection: &Connection) -> Result<HashSet<String>> {
         let mut statement = connection.prepare("PRAGMA table_info(clipboard_entries)")?;
         let mut rows = statement.query([])?;
+        let mut columns = HashSet::new();
 
         while let Some(row) = rows.next()? {
-            if row.get::<_, String>(1)? == column {
-                return Ok(true);
-            }
+            columns.insert(row.get::<_, String>(1)?);
         }
 
-        Ok(false)
+        Ok(columns)
     }
 
     #[cfg(test)]
@@ -351,28 +383,78 @@ impl ClipboardStore {
              ORDER BY is_pinned DESC, copied_at DESC, id DESC
              LIMIT ?1",
         )?;
-        let entries = statement.query_map(params![i64::from(limit)], |row| {
-            let is_pinned_int: i32 = row.get(7)?;
-            Ok(ClipboardEntry {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                copied_at: row.get(2)?,
-                source_app: row.get(3)?,
-                source_process: row.get(4)?,
-                window_title: row.get(5)?,
-                app_icon: row.get(6)?,
-                is_pinned: is_pinned_int != 0,
-                entry_type: row.get(8).unwrap_or_else(|_| "text".into()),
-                image_data: row.get(9)?,
-                image_dimensions: row.get(10)?,
-                files_data: row.get(11)?,
-                source_url: row.get(12)?,
-                ocr_text: row.get(13)?,
-                ocr_boxes: row.get(14)?,
-            })
-        })?;
+        let entries = statement.query_map(params![i64::from(limit)], Self::map_clipboard_entry)?;
 
         entries.collect()
+    }
+
+    // ----------
+    // Lightweight Feed, Tray, and Image Queries
+    // Description: Avoids loading full-resolution base64 image_data blobs during
+    // feed listing, tray menu updates, and row counting. Images are fetched on
+    // demand by primary key when rendered, copied, or saved.
+    // ----------
+
+    /// Return the newest entries without inline `image_data` blobs for fast IPC.
+    pub fn recent_entry_summaries(&self, limit: u32) -> Result<Vec<ClipboardEntry>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, NULL, image_dimensions, files_data, source_url, ocr_text, ocr_boxes
+             FROM clipboard_entries
+             ORDER BY is_pinned DESC, copied_at DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let entries = statement.query_map(params![i64::from(limit)], Self::map_clipboard_entry)?;
+
+        entries.collect()
+    }
+
+    /// Return only `(id, content)` for the newest entries, used by the tray menu
+    /// without touching overflow image pages.
+    pub fn recent_tray_entries(&self, limit: u32) -> Result<Vec<(i64, String)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, content
+             FROM clipboard_entries
+             ORDER BY is_pinned DESC, copied_at DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map(params![i64::from(limit)], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+
+        rows.collect()
+    }
+
+    /// Return only the `image_data` payload for a single entry by ID.
+    pub fn get_entry_image(&self, id: i64) -> Result<Option<String>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT image_data FROM clipboard_entries WHERE id = ?1")?;
+        let mut rows = statement.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            row.get(0)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Count active entries without materializing row payloads.
+    pub fn entry_count(&self) -> Result<usize> {
+        let count: i64 =
+            self.connection
+                .query_row("SELECT COUNT(*) FROM clipboard_entries", [], |row| {
+                    row.get(0)
+                })?;
+        Ok(count.max(0) as usize)
+    }
+
+    /// Count archived entries without materializing row payloads.
+    pub fn deleted_entry_count(&self) -> Result<usize> {
+        let count: i64 =
+            self.connection
+                .query_row("SELECT COUNT(*) FROM deleted_entries", [], |row| {
+                    row.get(0)
+                })?;
+        Ok(count.max(0) as usize)
     }
 
     /// Return a single stored entry by its ID.
@@ -644,6 +726,19 @@ impl ClipboardStore {
     pub fn recent_deleted_entries(&self, limit: u32) -> Result<Vec<DeletedEntry>> {
         let mut statement = self.connection.prepare(
             "SELECT id, original_id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, deleted_at
+             FROM deleted_entries
+             ORDER BY deleted_at DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let entries = statement.query_map(params![i64::from(limit)], Self::map_deleted_entry)?;
+
+        entries.collect()
+    }
+
+    /// Return the newest archived records without inline `image_data` blobs.
+    pub fn recent_deleted_entry_summaries(&self, limit: u32) -> Result<Vec<DeletedEntry>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, original_id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, NULL, image_dimensions, files_data, source_url, deleted_at
              FROM deleted_entries
              ORDER BY deleted_at DESC, id DESC
              LIMIT ?1",
@@ -1781,5 +1876,104 @@ mod tests {
         assert_eq!(counts.entries_skipped, 1);
         let live = store.all_entries().expect("entries should read back");
         assert!(live[0].is_pinned);
+    }
+
+    #[test]
+    fn recent_queries_use_order_index_without_temp_btree() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        store.add_text("hello").expect("entry should store");
+
+        let mut stmt = store
+            .connection
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT id, content
+                 FROM clipboard_entries
+                 ORDER BY is_pinned DESC, copied_at DESC, id DESC
+                 LIMIT 100",
+            )
+            .expect("explain should prepare");
+        let plans: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(3))
+            .expect("explain should query")
+            .collect::<Result<_, _>>()
+            .expect("plan rows should decode");
+
+        assert!(
+            plans.iter().any(|p| p.contains("idx_clipboard_entries_order")),
+            "expected idx_clipboard_entries_order in query plan, got {plans:?}"
+        );
+        assert!(
+            !plans.iter().any(|p| p.contains("TEMP B-TREE")),
+            "expected no temp B-tree sort in query plan, got {plans:?}"
+        );
+    }
+
+    #[test]
+    fn summaries_omit_image_blobs_and_get_entry_image_loads_on_demand() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        let metadata = ClipboardMetadata::default();
+        let data_url = "data:image/png;base64,aW1hZ2U=";
+        let img_id = store
+            .add_image_entry(data_url, "640x480", &metadata)
+            .expect("image should store");
+        let txt_id = store.add_text("plain text").expect("text should store");
+
+        let summaries = store
+            .recent_entry_summaries(10)
+            .expect("summaries should query");
+        assert_eq!(summaries.len(), 2);
+        let img_summary = summaries
+            .iter()
+            .find(|e| e.id == img_id)
+            .expect("image summary should exist");
+        assert_eq!(img_summary.entry_type, "image");
+        assert_eq!(img_summary.image_dimensions.as_deref(), Some("640x480"));
+        assert_eq!(img_summary.image_data, None);
+
+        assert_eq!(
+            store.get_entry_image(img_id).expect("image lookup should work"),
+            Some(data_url.to_string())
+        );
+        assert_eq!(
+            store.get_entry_image(txt_id).expect("text lookup should work"),
+            None
+        );
+        assert_eq!(
+            store.get_entry_image(9999).expect("missing lookup should work"),
+            None
+        );
+
+        let tray = store
+            .recent_tray_entries(5)
+            .expect("tray entries should query");
+        assert_eq!(tray.len(), 2);
+        assert_eq!(tray[0], (txt_id, "plain text".to_string()));
+        assert_eq!(tray[1], (img_id, "Image (640x480)".to_string()));
+        assert_eq!(store.entry_count().expect("entry_count should work"), 2);
+        assert_eq!(
+            store
+                .deleted_entry_count()
+                .expect("deleted_entry_count should work"),
+            0
+        );
+
+        store.soft_delete_entry(img_id).expect("soft delete should succeed");
+        assert_eq!(store.entry_count().expect("entry_count should work"), 1);
+        assert_eq!(
+            store
+                .deleted_entry_count()
+                .expect("deleted_entry_count should work"),
+            1
+        );
+        let deleted_summaries = store
+            .recent_deleted_entry_summaries(10)
+            .expect("deleted summaries should query");
+        assert_eq!(deleted_summaries.len(), 1);
+        assert_eq!(deleted_summaries[0].image_data, None);
+        assert_eq!(
+            deleted_summaries[0].image_dimensions.as_deref(),
+            Some("640x480")
+        );
     }
 }
