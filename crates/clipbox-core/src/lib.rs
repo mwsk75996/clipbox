@@ -7,7 +7,7 @@ mod storage;
 
 pub use storage::{
     deleted_retention_lifetime_seconds, strip_leading_empty_lines, ClipboardEntry,
-    ClipboardMetadata, ClipboardStore, DeletedEntry,
+    ClipboardMetadata, ClipboardStore, DeletedEntry, EntryPage, EntryQuery,
 };
 
 /// The application name shared by frontends.

@@ -3,11 +3,12 @@
 // Description: SQLite-backed storage managing clipboard entries with source app metadata, process name, window title, and application icon.
 // ----------
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, Result};
+use rusqlite::types::Value as SqlValue;
+use rusqlite::{params, params_from_iter, Connection, Result};
 
 /// Schema version stored in SQLite's `PRAGMA user_version` header.
 /// Once migrated, subsequent opens skip DDL and PRAGMA table_info scans.
@@ -61,6 +62,42 @@ pub struct DeletedEntry {
     pub files_data: Option<String>,
     pub source_url: Option<String>,
     pub deleted_at: i64,
+}
+
+/// Query parameters for paginated, filtered history lookups.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EntryQuery {
+    pub search: Option<String>,
+    pub source_app: Option<String>,
+    pub entry_type: Option<String>,
+    pub from_timestamp: Option<i64>,
+    pub to_timestamp: Option<i64>,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+/// A single page of summary entries along with the total matching count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryPage {
+    pub entries: Vec<ClipboardEntry>,
+    pub total_count: usize,
+}
+
+/// Escape `%`, `_`, and `\` for a SQLite `LIKE ... ESCAPE '\'` substring match.
+fn escape_like_pattern(needle: &str) -> String {
+    let mut escaped = String::with_capacity(needle.len() + 2);
+    escaped.push('%');
+    for ch in needle.chars() {
+        match ch {
+            '\\' | '%' | '_' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            other => escaped.push(other),
+        }
+    }
+    escaped.push('%');
+    escaped
 }
 
 /// Current unix timestamp in seconds, used for copied_at and deleted_at.
@@ -455,6 +492,164 @@ impl ClipboardStore {
                     row.get(0)
                 })?;
         Ok(count.max(0) as usize)
+    }
+
+    // ----------
+    // Full-History Paginated & Filtered Queries
+    // Description: Queries summary rows (without inline image_data blobs) across
+    // the entire database using SQLite LIMIT/OFFSET and parameterized filters so
+    // users can browse and search thousands of entries with millisecond latency.
+    // ----------
+
+    /// Return a single page of entry summaries matching `query`, plus the exact
+    /// total number of matching rows across the entire history.
+    pub fn query_entry_summaries(&self, query: &EntryQuery) -> Result<EntryPage> {
+        let limit = query.limit.max(1);
+        let offset = query.offset;
+
+        let search_trimmed = query
+            .search
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let source_app_filter = query
+            .source_app
+            .as_deref()
+            .filter(|s| !s.is_empty() && *s != "all");
+        let entry_type_filter = query
+            .entry_type
+            .as_deref()
+            .filter(|s| !s.is_empty() && *s != "all");
+
+        let has_filters = search_trimmed.is_some()
+            || source_app_filter.is_some()
+            || entry_type_filter.is_some()
+            || query.from_timestamp.is_some()
+            || query.to_timestamp.is_some();
+
+        // Fast unfiltered path: uses idx_clipboard_entries_order directly with
+        // LIMIT/OFFSET and avoids touching rows outside the requested page.
+        if !has_filters {
+            let total_count = self.entry_count()?;
+            let mut statement = self.connection.prepare(
+                "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, NULL, image_dimensions, files_data, source_url, ocr_text, ocr_boxes
+                 FROM clipboard_entries
+                 ORDER BY is_pinned DESC, copied_at DESC, id DESC
+                 LIMIT ?1 OFFSET ?2",
+            )?;
+            let entries = statement
+                .query_map(
+                    params![i64::from(limit), i64::from(offset)],
+                    Self::map_clipboard_entry,
+                )?
+                .collect::<Result<Vec<_>>>()?;
+            return Ok(EntryPage {
+                entries,
+                total_count,
+            });
+        }
+
+        let mut conditions: Vec<&str> = Vec::new();
+        let mut values: Vec<SqlValue> = Vec::new();
+
+        if let Some(entry_type) = entry_type_filter {
+            match entry_type {
+                "image" => conditions.push("entry_type = 'image'"),
+                "file" => conditions.push("entry_type = 'file'"),
+                _ => conditions.push("entry_type NOT IN ('image', 'file')"),
+            }
+        }
+
+        if let Some(app_label) = source_app_filter {
+            conditions.push(
+                "COALESCE(NULLIF(source_app, ''), NULLIF(source_process, ''), NULLIF(window_title, ''), 'Unknown source') = ?",
+            );
+            values.push(SqlValue::Text(app_label.to_string()));
+        }
+
+        if let Some(from_ts) = query.from_timestamp {
+            conditions.push("copied_at >= ?");
+            values.push(SqlValue::Integer(from_ts));
+        }
+
+        if let Some(to_ts) = query.to_timestamp {
+            conditions.push("copied_at <= ?");
+            values.push(SqlValue::Integer(to_ts));
+        }
+
+        if let Some(needle) = search_trimmed {
+            let pattern = escape_like_pattern(&needle.to_lowercase());
+            conditions.push(
+                "(LOWER(content) LIKE ? ESCAPE '\\' \
+                  OR LOWER(COALESCE(source_app, '')) LIKE ? ESCAPE '\\' \
+                  OR LOWER(COALESCE(source_process, '')) LIKE ? ESCAPE '\\' \
+                  OR LOWER(COALESCE(window_title, '')) LIKE ? ESCAPE '\\' \
+                  OR LOWER(COALESCE(source_url, '')) LIKE ? ESCAPE '\\' \
+                  OR LOWER(COALESCE(ocr_text, '')) LIKE ? ESCAPE '\\')",
+            );
+            for _ in 0..6 {
+                values.push(SqlValue::Text(pattern.clone()));
+            }
+        }
+
+        // Single pass collects ordered matching IDs for both exact total count
+        // and the page slice, avoiding scanning the table twice.
+        let id_sql = format!(
+            "SELECT id FROM clipboard_entries WHERE {} ORDER BY is_pinned DESC, copied_at DESC, id DESC",
+            conditions.join(" AND ")
+        );
+        let mut id_stmt = self.connection.prepare(&id_sql)?;
+        let matching_ids: Vec<i64> = id_stmt
+            .query_map(params_from_iter(values.iter()), |row| row.get(0))?
+            .collect::<Result<Vec<_>>>()?;
+
+        let total_count = matching_ids.len();
+        let page_ids: Vec<i64> = matching_ids
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect();
+
+        if page_ids.is_empty() {
+            return Ok(EntryPage {
+                entries: Vec::new(),
+                total_count,
+            });
+        }
+
+        let placeholders = vec!["?"; page_ids.len()].join(", ");
+        let fetch_sql = format!(
+            "SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, NULL, image_dimensions, files_data, source_url, ocr_text, ocr_boxes
+             FROM clipboard_entries
+             WHERE id IN ({placeholders})"
+        );
+        let mut fetch_stmt = self.connection.prepare(&fetch_sql)?;
+        let mut by_id: HashMap<i64, ClipboardEntry> = fetch_stmt
+            .query_map(params_from_iter(page_ids.iter()), Self::map_clipboard_entry)?
+            .map(|res| res.map(|entry| (entry.id, entry)))
+            .collect::<Result<HashMap<_, _>>>()?;
+
+        let entries = page_ids
+            .into_iter()
+            .filter_map(|id| by_id.remove(&id))
+            .collect();
+
+        Ok(EntryPage {
+            entries,
+            total_count,
+        })
+    }
+
+    /// Return all distinct source application labels across the full history,
+    /// sorted alphabetically, matching the frontend's `sourceLabel` fallback chain.
+    pub fn list_source_apps(&self) -> Result<Vec<String>> {
+        let mut statement = self.connection.prepare(
+            "SELECT DISTINCT COALESCE(NULLIF(source_app, ''), NULLIF(source_process, ''), NULLIF(window_title, ''), 'Unknown source') AS app_label
+             FROM clipboard_entries
+             ORDER BY app_label ASC",
+        )?;
+        let apps = statement.query_map([], |row| row.get(0))?;
+        apps.collect()
     }
 
     /// Return a single stored entry by its ID.
@@ -1975,5 +2170,91 @@ mod tests {
             deleted_summaries[0].image_dimensions.as_deref(),
             Some("640x480")
         );
+    }
+
+    #[test]
+    fn query_entry_summaries_paginates_beyond_100_and_filters_full_history() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        let browser_meta = ClipboardMetadata {
+            source_app: Some("Brave".into()),
+            source_process: Some("brave.exe".into()),
+            window_title: Some("Docs".into()),
+            app_icon: None,
+            source_url: Some("https://example.com/guide".into()),
+        };
+        let editor_meta = ClipboardMetadata {
+            source_app: Some("Code".into()),
+            source_process: Some("Code.exe".into()),
+            window_title: Some("main.rs".into()),
+            app_icon: None,
+            source_url: None,
+        };
+
+        for i in 1..=120 {
+            let meta = if i % 2 == 0 { &browser_meta } else { &editor_meta };
+            store
+                .add_entry(&format!("clip_item_{i:03}"), meta)
+                .expect("text should store");
+        }
+        let img_id = store
+            .add_image_entry("data:image/png;base64,aW1hZ2U=", "100x50", &browser_meta)
+            .expect("image should store");
+        store
+            .set_ocr_text(img_id, "screenshot needle 100%_match")
+            .expect("ocr should store");
+
+        // Page 1 and page 5 across 121 total records.
+        let page1 = store
+            .query_entry_summaries(&super::EntryQuery {
+                limit: 25,
+                offset: 0,
+                ..Default::default()
+            })
+            .expect("page 1 should query");
+        assert_eq!(page1.total_count, 121);
+        assert_eq!(page1.entries.len(), 25);
+        assert_eq!(page1.entries[0].id, img_id);
+        assert_eq!(page1.entries[0].image_data, None);
+
+        let page5 = store
+            .query_entry_summaries(&super::EntryQuery {
+                limit: 25,
+                offset: 100,
+                ..Default::default()
+            })
+            .expect("page 5 should query");
+        assert_eq!(page5.total_count, 121);
+        assert_eq!(page5.entries.len(), 21);
+        assert_eq!(page5.entries.last().unwrap().content, "clip_item_001");
+
+        // Search matches OCR text and escapes literal `%` and `_` in LIKE.
+        let ocr_hits = store
+            .query_entry_summaries(&super::EntryQuery {
+                search: Some("100%_match".into()),
+                limit: 25,
+                offset: 0,
+                ..Default::default()
+            })
+            .expect("ocr search should query");
+        assert_eq!(ocr_hits.total_count, 1);
+        assert_eq!(ocr_hits.entries[0].id, img_id);
+
+        // Source app and entry type filters operate across the full table.
+        let code_text = store
+            .query_entry_summaries(&super::EntryQuery {
+                source_app: Some("Code".into()),
+                entry_type: Some("text".into()),
+                limit: 25,
+                offset: 0,
+                ..Default::default()
+            })
+            .expect("filtered query should succeed");
+        assert_eq!(code_text.total_count, 60);
+        assert_eq!(code_text.entries.len(), 25);
+
+        let apps = store
+            .list_source_apps()
+            .expect("distinct apps should query");
+        assert_eq!(apps, vec!["Brave".to_string(), "Code".to_string()]);
     }
 }
