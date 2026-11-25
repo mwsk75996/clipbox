@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clipbox_core::{
     deleted_retention_lifetime_seconds, ClipboardEntry as CoreClipboardEntry, ClipboardStore,
-    DeletedEntry as CoreDeletedEntry,
+    DeletedEntry as CoreDeletedEntry, EntryQuery,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
@@ -155,6 +155,13 @@ impl From<DeletedClipboardEntry> for CoreDeletedEntry {
 // databases never freeze the window message pump.
 // ----------
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryPageResponse {
+    pub entries: Vec<ClipboardEntry>,
+    pub total_count: usize,
+}
+
 #[tauri::command]
 async fn list_entries(state: tauri::State<'_, AppState>) -> Result<Vec<ClipboardEntry>, String> {
     let db_path = state.database_path.clone();
@@ -169,6 +176,68 @@ async fn list_entries(state: tauri::State<'_, AppState>) -> Result<Vec<Clipboard
     })
     .await
     .map_err(|error| format!("could not read Clipbox entries: {error}"))?
+}
+
+#[tauri::command]
+async fn query_entries(
+    state: tauri::State<'_, AppState>,
+    search: Option<String>,
+    source_app: Option<String>,
+    entry_type: Option<String>,
+    from_timestamp: Option<i64>,
+    to_timestamp: Option<i64>,
+    page: Option<u32>,
+    per_page: Option<u32>,
+) -> Result<EntryPageResponse, String> {
+    let db_path = state.database_path.clone();
+    let limit = per_page.unwrap_or(25).clamp(1, 200);
+    let page_num = page.unwrap_or(1).max(1);
+    let offset = (page_num - 1).saturating_mul(limit);
+
+    let query = EntryQuery {
+        search,
+        source_app,
+        entry_type,
+        from_timestamp,
+        to_timestamp,
+        limit,
+        offset,
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+        let result = store
+            .query_entry_summaries(&query)
+            .map_err(|error| format!("could not query Clipbox entries: {error}"))?;
+
+        Ok(EntryPageResponse {
+            entries: result
+                .entries
+                .into_iter()
+                .map(ClipboardEntry::from)
+                .collect(),
+            total_count: result.total_count,
+        })
+    })
+    .await
+    .map_err(|error| format!("could not query Clipbox entries: {error}"))?
+}
+
+#[tauri::command]
+async fn list_source_apps(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    let db_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ClipboardStore::open(&db_path)
+            .map_err(|error| format!("could not open Clipbox database: {error}"))?;
+
+        store
+            .list_source_apps()
+            .map_err(|error| format!("could not read source applications: {error}"))
+    })
+    .await
+    .map_err(|error| format!("could not read source applications: {error}"))?
 }
 
 #[tauri::command]
@@ -2446,6 +2515,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_entries,
+            query_entries,
+            list_source_apps,
             get_entry_image,
             clear_entries,
             delete_entry,

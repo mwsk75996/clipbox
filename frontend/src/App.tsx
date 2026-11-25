@@ -238,8 +238,12 @@ export function stripLeadingEmptyLines(text: string): string {
 }
 
 export default function App() {
+  const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   const [entries, setEntries] = React.useState<ClipboardEntry[]>([]);
+  const [totalEntriesCount, setTotalEntriesCount] = React.useState<number>(0);
+  const [sourceApps, setSourceApps] = React.useState<string[]>([]);
   const [searchQuery, setSearchQuery] = React.useState("");
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = React.useState("");
   const [selectedApp, setSelectedApp] = React.useState<string>("all");
   const [selectedType, setSelectedType] = React.useState<"all" | "text" | "image" | "file">("all");
   const [dateRange, setDateRange] = React.useState<DateRange | undefined>();
@@ -270,9 +274,9 @@ export default function App() {
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const feedScrollRef = React.useRef<HTMLDivElement | null>(null);
   const inFlightDeletionsRef = React.useRef<Set<number>>(new Set());
-  const fetchInFlightRef = React.useRef<boolean>(false);
-  const fetchQueuedRef = React.useRef<boolean>(false);
+  const querySeqRef = React.useRef<number>(0);
   const lastFetchTimeRef = React.useRef<number>(0);
+  const fetchEntriesRef = React.useRef<() => Promise<void>>(async () => {});
   const toastIdRef = React.useRef<number>(0);
   const updateBusyRef = React.useRef(false);
   const installFiredRef = React.useRef(false);
@@ -331,44 +335,111 @@ export default function App() {
     }
   };
 
-  // Fetch clipboard entries from Tauri IPC with in-flight coalescing and deletion protection
-  const fetchEntries = React.useCallback(async () => {
-    if (fetchInFlightRef.current) {
-      fetchQueuedRef.current = true;
+  // Debounce search input slightly for full-history SQLite queries; clearing is immediate.
+  React.useEffect(() => {
+    if (!searchQuery.trim()) {
+      setDebouncedSearchQuery("");
       return;
     }
-    fetchInFlightRef.current = true;
+    const timer = window.setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
+
+  const perPage = Math.max(1, parseInt(entriesPerPage, 10) || 25);
+
+  const fetchSourceApps = React.useCallback(async () => {
+    if (!isTauri) return;
     try {
-      do {
-        fetchQueuedRef.current = false;
-        lastFetchTimeRef.current = Date.now();
-        if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-          const result = await invoke<ClipboardEntry[]>("list_entries");
-          setEntries(result.filter((e) => !inFlightDeletionsRef.current.has(e.id)));
-        } else {
-          setEntries(PREVIEW_ENTRIES);
-        }
-      } while (fetchQueuedRef.current);
+      const apps = await invoke<string[]>("list_source_apps");
+      setSourceApps(apps);
     } catch (err) {
+      console.warn("Could not read source applications", err);
+    }
+  }, [isTauri]);
+
+  // ----------
+  // Full-History SQLite Query & Pagination
+  // Description: Fetches only the active page of summary entries and the exact
+  // total match count across the entire SQLite history, discarding stale
+  // out-of-order responses via a monotonic request counter.
+  // ----------
+  const fetchEntries = React.useCallback(async () => {
+    const seq = ++querySeqRef.current;
+    lastFetchTimeRef.current = Date.now();
+    try {
+      if (isTauri) {
+        const fromTimestamp = dateRange?.from
+          ? Math.floor(startOfDay(dateRange.from).getTime() / 1000)
+          : null;
+        const toTimestamp = dateRange?.to
+          ? Math.floor(endOfDay(dateRange.to).getTime() / 1000)
+          : null;
+        const result = await invoke<{
+          entries: ClipboardEntry[];
+          totalCount: number;
+        }>("query_entries", {
+          search: debouncedSearchQuery.trim() || null,
+          sourceApp: selectedApp === "all" ? null : selectedApp,
+          entryType: selectedType === "all" ? null : selectedType,
+          fromTimestamp,
+          toTimestamp,
+          page,
+          perPage,
+        });
+        if (seq !== querySeqRef.current) return;
+        const filtered = result.entries.filter(
+          (e) => !inFlightDeletionsRef.current.has(e.id)
+        );
+        setEntries(filtered);
+        setTotalEntriesCount(result.totalCount);
+        const maxPage = Math.max(1, Math.ceil(result.totalCount / perPage));
+        if (page > maxPage) {
+          setPage(maxPage);
+        }
+      } else {
+        setEntries(PREVIEW_ENTRIES);
+        setTotalEntriesCount(PREVIEW_ENTRIES.length);
+      }
+    } catch (err) {
+      if (seq !== querySeqRef.current) return;
       console.error("Failed to fetch entries:", err);
       setEntries(PREVIEW_ENTRIES);
-    } finally {
-      fetchInFlightRef.current = false;
+      setTotalEntriesCount(PREVIEW_ENTRIES.length);
     }
-  }, []);
+  }, [
+    isTauri,
+    debouncedSearchQuery,
+    selectedApp,
+    selectedType,
+    dateRange,
+    page,
+    perPage,
+  ]);
 
-  // Initial load and re-sync on window focus
   React.useEffect(() => {
-    fetchEntries();
+    fetchEntriesRef.current = fetchEntries;
+  }, [fetchEntries]);
+
+  // Load distinct source apps across the full history once on startup
+  React.useEffect(() => {
+    void fetchSourceApps();
+  }, [fetchSourceApps]);
+
+  // Initial load, re-query when filters/page change, and re-sync on window focus
+  React.useEffect(() => {
+    void fetchEntries();
     const handleFocus = () => {
       if (Date.now() - lastFetchTimeRef.current < FOCUS_REFETCH_MIN_INTERVAL_MS) {
         return;
       }
-      fetchEntries();
+      void fetchEntries();
+      void fetchSourceApps();
     };
     window.addEventListener("focus", handleFocus);
     return () => window.removeEventListener("focus", handleFocus);
-  }, [fetchEntries]);
+  }, [fetchEntries, fetchSourceApps]);
 
   // Real-time clipboard capture and status event listeners
   React.useEffect(() => {
@@ -385,37 +456,21 @@ export default function App() {
             if (inFlightDeletionsRef.current.has(event.payload.id)) {
               return;
             }
-            setEntries((prev) => {
-              // Match full identity, not just id: backend ID resequencing
-              // means a fresh capture can reuse an id still carried by a
-              // stale displayed row. Same id but different content is a new
-              // row, not a duplicate; same everything is a re-delivery.
-              if (
-                prev.some(
-                  (e) =>
-                    e.id === event.payload.id &&
-                    e.content === event.payload.content &&
-                    e.copiedAt === event.payload.copiedAt
-                )
-              ) {
-                return prev;
-              }
-              return [event.payload, ...prev].slice(0, 100);
-            });
-            // Fresh captures land on page 1; navigate there so they stay
-            // visible when browsing older pages. No-op when already there.
+            const label = sourceLabel(event.payload);
+            setSourceApps((prev) =>
+              prev.includes(label) ? prev : [...prev, label].sort()
+            );
+            // Fresh captures land on page 1; navigate there and refresh from SQLite.
             setPage(1);
+            void fetchEntriesRef.current();
           });
 
           unlistenBump = await listen<ClipboardEntry>("clipboard://entry-bumped", (event) => {
             if (inFlightDeletionsRef.current.has(event.payload.id)) {
               return;
             }
-            setEntries((prev) => {
-              const filtered = prev.filter((e) => e.id !== event.payload.id);
-              return [event.payload, ...filtered];
-            });
             setPage(1);
+            void fetchEntriesRef.current();
           });
 
           unlistenPause = await listen<boolean>("clipboard://monitoring-paused-changed", (event) => {
@@ -459,17 +514,24 @@ export default function App() {
     };
   }, []);
 
-  // Unique source apps list for filtering
+  // Unique source apps list for filtering (SQLite-backed in Tauri, local fallback in web preview)
   const availableApps = React.useMemo(() => {
+    if (isTauri) {
+      return sourceApps;
+    }
     const apps = new Set<string>();
     for (const entry of entries) {
       apps.add(sourceLabel(entry));
     }
     return Array.from(apps).sort();
-  }, [entries]);
+  }, [isTauri, sourceApps, entries]);
 
-  // Filtered entries by query, app, content type, and min/max date range
+  // In Tauri mode, filtering/sorting/pagination happen in SQLite across the full
+  // database. Web preview keeps client-side filtering over PREVIEW_ENTRIES.
   const filteredEntries = React.useMemo(() => {
+    if (isTauri) {
+      return entries;
+    }
     const query = searchQuery.trim().toLowerCase();
     const fromTime = dateRange?.from
       ? Math.floor(startOfDay(dateRange.from).getTime() / 1000)
@@ -521,17 +583,18 @@ export default function App() {
       }
       return a.isPinned ? -1 : 1;
     });
-  }, [entries, searchQuery, selectedApp, selectedType, dateRange]);
+  }, [isTauri, entries, searchQuery, selectedApp, selectedType, dateRange]);
 
-  // Feed pagination: slice the filtered feed into pages. The page is clamped
-  // inline so a shrinking list never renders an empty page for a frame.
-  const perPage = Math.max(1, parseInt(entriesPerPage, 10) || 25);
-  const totalPages = Math.max(1, Math.ceil(filteredEntries.length / perPage));
+  const effectiveTotalCount = isTauri ? totalEntriesCount : filteredEntries.length;
+  const totalPages = Math.max(1, Math.ceil(effectiveTotalCount / perPage));
   const safePage = Math.min(Math.max(page, 1), totalPages);
   const paginatedEntries = React.useMemo(() => {
+    if (isTauri) {
+      return entries;
+    }
     const start = (safePage - 1) * perPage;
     return filteredEntries.slice(start, start + perPage);
-  }, [filteredEntries, safePage, perPage]);
+  }, [isTauri, entries, filteredEntries, safePage, perPage]);
 
   // Toggle pinned status of an entry
   const handleTogglePin = async (id: number, event?: React.MouseEvent) => {
@@ -542,12 +605,13 @@ export default function App() {
       )
     );
     try {
-      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+      if (isTauri) {
         await invoke("toggle_pinned", { id });
+        void fetchEntries();
       }
     } catch (err) {
       console.error("Failed to toggle pin", err);
-      fetchEntries();
+      void fetchEntries();
     }
   };
 
@@ -1123,7 +1187,7 @@ export default function App() {
   return (
     <div className="h-screen w-screen bg-background text-foreground flex flex-col font-sans select-none overflow-hidden transition-colors duration-200">
       {/* Native Desktop Titlebar with Centered Entries Count */}
-      <Titlebar entriesCount={filteredEntries.length} onCloseRequest={requestClose} />
+      <Titlebar entriesCount={effectiveTotalCount} onCloseRequest={requestClose} />
 
       {/* Main App Container */}
       <div className="flex-1 flex flex-col overflow-hidden">
@@ -1272,8 +1336,9 @@ export default function App() {
                 inFlightDeletionsRef.current.clear();
                 clearEntryImageCache();
                 setEntries([]);
+                setTotalEntriesCount(0);
                 setPage(1);
-                fetchDeletedEntries();
+                void Promise.all([fetchEntries(), fetchSourceApps(), fetchDeletedEntries()]);
               }}
               onImportComplete={() => {
                 inFlightDeletionsRef.current.clear();
@@ -1281,7 +1346,7 @@ export default function App() {
                 setPage(1);
                 setFocusedIndex(null);
                 scrollFeedToTop();
-                void Promise.all([fetchEntries(), fetchDeletedEntries()]);
+                void Promise.all([fetchEntries(), fetchDeletedEntries(), fetchSourceApps()]);
               }}
               shortcuts={shortcuts}
               onShortcutsChange={setShortcuts}
@@ -1379,7 +1444,7 @@ export default function App() {
                 </div>
               </ScrollArea>
             </div>
-          ) : filteredEntries.length === 0 ? (
+          ) : paginatedEntries.length === 0 ? (
             <div className="max-w-4xl w-full mx-auto px-6 flex flex-col items-center justify-center my-auto py-16 text-center">
               <p className="text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
                 Your Clipboard
