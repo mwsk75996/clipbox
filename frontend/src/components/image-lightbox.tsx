@@ -16,6 +16,7 @@ import {
   Plus,
   Minus,
   RotateCcw,
+  Loader2,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -23,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import type { ClipboardEntry } from "../App";
 import { ImageAnnotator } from "./image-editor/image-annotator";
 import { matchOcrBoxes, type OcrBox } from "@/lib/ocr";
+import { loadEntryImage, peekEntryImage } from "@/lib/image-cache";
 
 interface ImageLightboxProps {
   entry: ClipboardEntry | null;
@@ -45,6 +47,8 @@ export function ImageLightbox({
   const [copied, setCopied] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [saveMessage, setSaveMessage] = React.useState<string | null>(null);
+  const [resolvedImageData, setResolvedImageData] = React.useState<string | null>(null);
+  const [loadingImage, setLoadingImage] = React.useState(false);
 
   // Zoom & Pan interactive state
   const [zoom, setZoom] = React.useState<number>(1);
@@ -116,11 +120,39 @@ export function ImageLightbox({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, onClose, handleZoomIn, handleZoomOut, handleResetZoom]);
 
-  if (!isOpen || !entry || !entry.imageData) {
+  // Load full image data on demand when the lightbox opens for an entry.
+  React.useEffect(() => {
+    if (!isOpen || !entry || entry.entryType !== "image") {
+      setResolvedImageData(null);
+      setLoadingImage(false);
+      return;
+    }
+
+    const immediate = entry.imageData ?? peekEntryImage(entry.id, entry.copiedAt);
+    if (immediate) {
+      setResolvedImageData(immediate);
+      setLoadingImage(false);
+      return;
+    }
+
+    let cancelled = false;
+    setResolvedImageData(null);
+    setLoadingImage(true);
+    loadEntryImage(entry.id, entry.copiedAt, entry.imageData).then((dataUrl) => {
+      if (cancelled) return;
+      setResolvedImageData(dataUrl);
+      setLoadingImage(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, entry]);
+
+  if (!isOpen || !entry || entry.entryType !== "image") {
     return null;
   }
 
-  if (isEditing) {
+  if (isEditing && resolvedImageData) {
     return (
       <div
         role="dialog"
@@ -129,7 +161,7 @@ export function ImageLightbox({
         className="fixed top-9 inset-x-0 bottom-0 z-40 flex flex-col bg-background animate-in fade-in-0 duration-200"
       >
         <ImageAnnotator
-          initialDataUrl={entry.imageData}
+          initialDataUrl={resolvedImageData}
           sourceEntryId={entry.id}
           initialDimensions={entry.imageDimensions}
           onClose={() => setIsEditing(false)}
@@ -146,9 +178,7 @@ export function ImageLightbox({
   const handleCopy = async () => {
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-        await invoke("copy_image_to_clipboard", {
-          dataUrl: entry.imageData,
-        });
+        await invoke("copy_entry_image_to_clipboard", { id: entry.id });
       }
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
@@ -167,8 +197,8 @@ export function ImageLightbox({
 
     try {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-        const savedPath = await invoke<string | null>("save_image_to_file", {
-          dataUrl: entry.imageData,
+        const savedPath = await invoke<string | null>("save_entry_image_to_file", {
+          id: entry.id,
           defaultFilename,
         });
 
@@ -177,10 +207,10 @@ export function ImageLightbox({
           setSaveMessage(`Saved as ${filenameOnly}`);
           setTimeout(() => setSaveMessage(null), 3000);
         }
-      } else {
+      } else if (resolvedImageData) {
         // Web fallback
         const link = document.createElement("a");
-        link.href = entry.imageData!;
+        link.href = resolvedImageData;
         link.download = defaultFilename;
         document.body.appendChild(link);
         link.click();
@@ -394,6 +424,7 @@ export function ImageLightbox({
             variant="outline"
             size="sm"
             onClick={() => setIsEditing(true)}
+            disabled={!resolvedImageData}
             title="Annotate & Crop Image"
             className="h-8 gap-1.5 text-xs font-medium border-primary/40 text-primary hover:bg-primary/10"
           >
@@ -482,12 +513,25 @@ export function ImageLightbox({
               backgroundPosition: "0 0, 0 10px, 10px -10px, -10px 0px",
             }}
           >
-            <img
-              src={entry.imageData}
-              alt={entry.content}
-              draggable={false}
-              className="max-w-[calc(88vw)] max-h-[calc(68vh)] object-contain select-none pointer-events-none rounded-lg"
-            />
+            {resolvedImageData ? (
+              <img
+                src={resolvedImageData}
+                alt={entry.content}
+                draggable={false}
+                className="max-w-[calc(88vw)] max-h-[calc(68vh)] object-contain select-none pointer-events-none rounded-lg"
+              />
+            ) : (
+              <div className="flex items-center justify-center gap-2 px-16 py-24 text-sm text-muted-foreground">
+                {loadingImage ? (
+                  <>
+                    <Loader2 className="size-5 animate-spin" />
+                    <span>Loading image...</span>
+                  </>
+                ) : (
+                  <span>Image unavailable</span>
+                )}
+              </div>
+            )}
             {matchedBoxes.length > 0 && (
               <div className="absolute inset-0 pointer-events-none">
                 {matchedBoxes.map((box, index) => (
