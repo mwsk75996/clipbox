@@ -241,6 +241,7 @@ export default function App() {
   const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   const [entries, setEntries] = React.useState<ClipboardEntry[]>([]);
   const [totalEntriesCount, setTotalEntriesCount] = React.useState<number>(0);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
   const [sourceApps, setSourceApps] = React.useState<string[]>([]);
   const [searchQuery, setSearchQuery] = React.useState("");
   const [debouncedSearchQuery, setDebouncedSearchQuery] = React.useState("");
@@ -394,6 +395,7 @@ export default function App() {
         );
         setEntries(filtered);
         setTotalEntriesCount(result.totalCount);
+        setLoadError(null);
         const maxPage = Math.max(1, Math.ceil(result.totalCount / perPage));
         if (page > maxPage) {
           setPage(maxPage);
@@ -401,12 +403,27 @@ export default function App() {
       } else {
         setEntries(PREVIEW_ENTRIES);
         setTotalEntriesCount(PREVIEW_ENTRIES.length);
+        setLoadError(null);
       }
     } catch (err) {
       if (seq !== querySeqRef.current) return;
       console.error("Failed to fetch entries:", err);
-      setEntries(PREVIEW_ENTRIES);
-      setTotalEntriesCount(PREVIEW_ENTRIES.length);
+      if (isTauri) {
+        // Never substitute actionable demo rows with live IDs on desktop error;
+        // surface a retry state instead so mutations cannot hit real records.
+        setEntries([]);
+        setTotalEntriesCount(0);
+        setLoadError(
+          err instanceof Error
+            ? err.message
+            : typeof err === "string"
+              ? err
+              : "Could not load clipboard history."
+        );
+      } else {
+        setEntries(PREVIEW_ENTRIES);
+        setTotalEntriesCount(PREVIEW_ENTRIES.length);
+      }
     }
   }, [
     isTauri,
@@ -1443,6 +1460,30 @@ export default function App() {
                   )}
                 </div>
               </ScrollArea>
+            </div>
+          ) : loadError ? (
+            <div className="max-w-4xl w-full mx-auto px-6 flex flex-col items-center justify-center my-auto py-16 text-center">
+              <span className="size-12 rounded-full bg-destructive/10 border border-destructive/20 flex items-center justify-center">
+                <TriangleAlert className="size-6 text-destructive" />
+              </span>
+              <h3 className="text-base font-semibold tracking-tight mt-4">
+                Could not load clipboard history
+              </h3>
+              <p className="text-xs text-muted-foreground max-w-md mt-1 break-words">
+                {loadError}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  void fetchEntries();
+                  void fetchSourceApps();
+                }}
+                className="mt-4 gap-1.5"
+              >
+                <RotateCcw className="size-3.5" />
+                Retry
+              </Button>
             </div>
           ) : paginatedEntries.length === 0 ? (
             <div className="max-w-4xl w-full mx-auto px-6 flex flex-col items-center justify-center my-auto py-16 text-center">

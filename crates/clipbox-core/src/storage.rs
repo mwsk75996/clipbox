@@ -8,11 +8,11 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, params_from_iter, Connection, Result};
+use rusqlite::{params, params_from_iter, Connection, Result, TransactionBehavior};
 
 /// Schema version stored in SQLite's `PRAGMA user_version` header.
 /// Once migrated, subsequent opens skip DDL and PRAGMA table_info scans.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Metadata captured along with a clipboard entry.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -150,7 +150,7 @@ impl ClipboardStore {
         if user_version < SCHEMA_VERSION {
             connection.execute_batch(
                 "CREATE TABLE IF NOT EXISTS clipboard_entries (
-                    id INTEGER PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     content TEXT NOT NULL,
                     copied_at INTEGER NOT NULL,
                     source_app TEXT,
@@ -170,8 +170,12 @@ impl ClipboardStore {
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS entry_id_seq (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    last_id INTEGER NOT NULL DEFAULT 0
+                );
                 CREATE TABLE IF NOT EXISTS deleted_entries (
-                    id INTEGER PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     original_id INTEGER NOT NULL,
                     content TEXT NOT NULL,
                     copied_at INTEGER NOT NULL,
@@ -218,11 +222,16 @@ impl ClipboardStore {
 
             // Composite feed-order index avoids full-table scans and temp B-tree
             // sorts over inline image blobs on every open/focus/tray refresh.
+            // Also seed the monotonic entry ID sequence from existing rows so
+            // migrated tables never reuse deleted or cleared IDs.
             connection.execute_batch(
                 "CREATE INDEX IF NOT EXISTS idx_clipboard_entries_order
                     ON clipboard_entries(is_pinned DESC, copied_at DESC, id DESC);
                 CREATE INDEX IF NOT EXISTS idx_clipboard_entries_type_id
-                    ON clipboard_entries(entry_type, id DESC);",
+                    ON clipboard_entries(entry_type, id DESC);
+                INSERT INTO entry_id_seq (id, last_id)
+                    VALUES (1, (SELECT COALESCE(MAX(id), 0) FROM clipboard_entries))
+                    ON CONFLICT(id) DO UPDATE SET last_id = MAX(last_id, excluded.last_id);",
             )?;
 
             connection.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
@@ -248,6 +257,44 @@ impl ClipboardStore {
         Self::initialize(Connection::open_in_memory()?)
     }
 
+    // ----------
+    // Immutable Monotonic Entry ID Allocation
+    // Description: Tracks a persistent high-water mark in `entry_id_seq` so
+    // clipboard entry IDs are never shifted or reused after deletes or Clear
+    // History, even on legacy tables created without AUTOINCREMENT.
+    // ----------
+    fn begin_immediate(&self) -> Result<rusqlite::Transaction<'_>> {
+        rusqlite::Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+    }
+
+    fn record_entry_id_high_water(connection: &Connection) -> Result<()> {
+        connection.execute(
+            "INSERT INTO entry_id_seq (id, last_id)
+             VALUES (1, (SELECT COALESCE(MAX(id), 0) FROM clipboard_entries))
+             ON CONFLICT(id) DO UPDATE SET last_id = MAX(last_id, excluded.last_id)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn allocate_next_entry_id(connection: &Connection) -> Result<i64> {
+        let current_max: i64 = connection.query_row(
+            "SELECT MAX(
+                 COALESCE((SELECT last_id FROM entry_id_seq WHERE id = 1), 0),
+                 COALESCE((SELECT MAX(id) FROM clipboard_entries), 0)
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        let next_id = current_max + 1;
+        connection.execute(
+            "INSERT INTO entry_id_seq (id, last_id) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET last_id = MAX(last_id, excluded.last_id)",
+            params![next_id],
+        )?;
+        Ok(next_id)
+    }
+
     /// Add a text clipboard entry and return its database id.
     pub fn add_text(&self, content: &str) -> Result<i64> {
         self.add_entry(content, &ClipboardMetadata::default())
@@ -267,11 +314,14 @@ impl ClipboardStore {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        self.connection.execute(
+        let tx = self.begin_immediate()?;
+        let last_id = Self::allocate_next_entry_id(&tx)?;
+        tx.execute(
             "INSERT INTO clipboard_entries
-                (content, copied_at, source_app, source_process, window_title, app_icon, source_url)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (id, content, copied_at, source_app, source_process, window_title, app_icon, source_url)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
+                last_id,
                 content_to_store,
                 copied_at,
                 metadata.source_app.as_deref(),
@@ -281,8 +331,7 @@ impl ClipboardStore {
                 metadata.source_url.as_deref(),
             ],
         )?;
-
-        let last_id = self.connection.last_insert_rowid();
+        tx.commit()?;
 
         // Enforce retention limit if configured
         if let Ok(Some(limit_str)) = self.get_setting("retention_limit") {
@@ -313,11 +362,14 @@ impl ClipboardStore {
 
         let content_label = format!("Image ({dimensions})");
 
-        self.connection.execute(
+        let tx = self.begin_immediate()?;
+        let last_id = Self::allocate_next_entry_id(&tx)?;
+        tx.execute(
             "INSERT INTO clipboard_entries (
-                content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, source_url
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 'image', ?7, ?8, ?9)",
+                id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, source_url
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 'image', ?8, ?9, ?10)",
             params![
+                last_id,
                 content_label,
                 now,
                 metadata.source_app.as_deref(),
@@ -329,8 +381,7 @@ impl ClipboardStore {
                 metadata.source_url.as_deref(),
             ],
         )?;
-
-        let last_id = self.connection.last_insert_rowid();
+        tx.commit()?;
 
         // Enforce retention limit if configured
         if let Ok(Some(limit_str)) = self.get_setting("retention_limit") {
@@ -359,11 +410,14 @@ impl ClipboardStore {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        self.connection.execute(
+        let tx = self.begin_immediate()?;
+        let last_id = Self::allocate_next_entry_id(&tx)?;
+        tx.execute(
             "INSERT INTO clipboard_entries (
-                content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, files_data, source_url
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 'file', ?7, ?8)",
+                id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, files_data, source_url
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 'file', ?8, ?9)",
             params![
+                last_id,
                 display_summary,
                 now,
                 metadata.source_app.as_deref(),
@@ -374,8 +428,7 @@ impl ClipboardStore {
                 metadata.source_url.as_deref(),
             ],
         )?;
-
-        let last_id = self.connection.last_insert_rowid();
+        tx.commit()?;
 
         // Enforce retention limit if configured
         if let Ok(Some(limit_str)) = self.get_setting("retention_limit") {
@@ -401,13 +454,16 @@ impl ClipboardStore {
             return Ok(0);
         }
 
-        let deleted = self.connection.execute(
+        let tx = self.begin_immediate()?;
+        Self::record_entry_id_high_water(&tx)?;
+        let deleted = tx.execute(
             "DELETE FROM clipboard_entries
              WHERE is_pinned = 0 AND id NOT IN (
                  SELECT id FROM clipboard_entries WHERE is_pinned = 0 ORDER BY id DESC LIMIT ?1
              )",
             params![limit as i64],
         )?;
+        tx.commit()?;
 
         Ok(deleted)
     }
@@ -788,12 +844,16 @@ impl ClipboardStore {
     }
 
     // ----------
-    // Clear History Storage
-    // Description: Moves all stored clipboard entries into the Recently Deleted archive (safety net) and returns the number of archived rows.
+    // Atomic Clear History Storage
+    // Description: Atomically moves all stored clipboard entries into the
+    // Recently Deleted archive inside a BEGIN IMMEDIATE transaction so
+    // concurrent captures cannot be lost between INSERT and DELETE.
     // ----------
     /// Move all stored clipboard records into the archive and return the archived count.
     pub fn clear_entries(&self) -> Result<usize> {
-        let archived = self.connection.execute(
+        let tx = self.begin_immediate()?;
+        Self::record_entry_id_high_water(&tx)?;
+        let archived = tx.execute(
             "INSERT INTO deleted_entries
                 (original_id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, deleted_at)
              SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, ?1
@@ -801,49 +861,33 @@ impl ClipboardStore {
             params![current_unix_timestamp()],
         )?;
 
-        self.connection
-            .execute("DELETE FROM clipboard_entries", [])?;
+        tx.execute("DELETE FROM clipboard_entries", [])?;
+        tx.commit()?;
 
         Ok(archived)
     }
 
     // ----------
-    // Delete Single Entry
-    // Description: Deletes an individual clipboard history entry by its primary key id and re-sequences higher IDs to maintain contiguous history numbering.
+    // Delete Single Entry (Immutable IDs)
+    // Description: Deletes an individual clipboard history entry by primary key
+    // without resequencing other rows, keeping all remaining IDs stable for
+    // background OCR, tray quick-paste slots, and lazy image lookups.
     // ----------
-    /// Delete a single clipboard record by id. Re-sequences higher IDs so numbers remain contiguous.
+    /// Delete a single clipboard record by id without mutating other entry IDs.
     pub fn delete_entry(&self, id: i64) -> Result<bool> {
-        let deleted = self.connection.execute(
-            "DELETE FROM clipboard_entries WHERE id = ?1",
-            params![id],
-        )?;
-
-        if deleted > 0 {
-            // Re-sequence IDs greater than the deleted id so numbers remain contiguous.
-            // Use negative temporary values to avoid any unique constraint conflicts.
-            self.connection.execute(
-                "UPDATE clipboard_entries SET id = -id WHERE id > ?1",
-                params![id],
-            )?;
-            self.connection.execute(
-                "UPDATE clipboard_entries SET id = -id - 1 WHERE id < 0",
-                [],
-            )?;
-            // Keep sqlite_sequence in sync so next autoincrement ID matches
-            let _ = self.connection.execute(
-                "UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id), 0) FROM clipboard_entries) WHERE name = 'clipboard_entries'",
-                [],
-            );
-        }
+        let tx = self.begin_immediate()?;
+        Self::record_entry_id_high_water(&tx)?;
+        let deleted = tx.execute("DELETE FROM clipboard_entries WHERE id = ?1", params![id])?;
+        tx.commit()?;
 
         Ok(deleted > 0)
     }
 
     // ----------
-    // Recently Deleted Archive
-    // Description: Soft-delete safety net. Deleted records move to a dedicated archive
-    // table (keeping the active table's ID resequencing intact) until restored,
-    // hard-deleted, or purged past the configured retention timespan.
+    // Recently Deleted Archive (Atomic Moves)
+    // Description: Soft-delete safety net moving records atomically between
+    // clipboard_entries and deleted_entries inside BEGIN IMMEDIATE transactions
+    // using INSERT ... SELECT without round-tripping image blobs through Rust.
     // ----------
     fn map_deleted_entry(row: &rusqlite::Row) -> rusqlite::Result<DeletedEntry> {
         let is_pinned_int: i32 = row.get(8)?;
@@ -866,55 +910,28 @@ impl ClipboardStore {
         })
     }
 
-    /// Archive a single active record. The active table keeps its existing ID
-    /// resequencing; the archive row keeps the original id for reference.
+    /// Atomically archive a single active record without mutating other entry IDs.
     /// Returns false when no active record has `id`.
     pub fn soft_delete_entry(&self, id: i64) -> Result<bool> {
-        let entry = match self.get_entry(id)? {
-            Some(entry) => entry,
-            None => return Ok(false),
-        };
-
-        self.connection.execute(
+        let tx = self.begin_immediate()?;
+        Self::record_entry_id_high_water(&tx)?;
+        let archived = tx.execute(
             "INSERT INTO deleted_entries
                 (original_id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, deleted_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-            params![
-                entry.id,
-                entry.content,
-                entry.copied_at,
-                entry.source_app.as_deref(),
-                entry.source_process.as_deref(),
-                entry.window_title.as_deref(),
-                entry.app_icon.as_deref(),
-                i32::from(entry.is_pinned),
-                entry.entry_type,
-                entry.image_data.as_deref(),
-                entry.image_dimensions.as_deref(),
-                entry.files_data.as_deref(),
-                entry.source_url.as_deref(),
-                current_unix_timestamp(),
-            ],
-        )?;
-
-        // Remove from the active table (reuses the hard-delete resequencing).
-        self.delete_entry(id)
-    }
-
-    /// Return a single archived record by its archive id.
-    fn get_deleted_entry(&self, id: i64) -> Result<Option<DeletedEntry>> {
-        let mut statement = self.connection.prepare(
-            "SELECT id, original_id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, deleted_at
-             FROM deleted_entries
+             SELECT id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, ?2
+             FROM clipboard_entries
              WHERE id = ?1",
+            params![id, current_unix_timestamp()],
         )?;
-        let mut rows = statement.query_map(params![id], Self::map_deleted_entry)?;
 
-        if let Some(entry) = rows.next() {
-            Ok(Some(entry?))
-        } else {
-            Ok(None)
+        if archived == 0 {
+            tx.commit()?;
+            return Ok(false);
         }
+
+        tx.execute("DELETE FROM clipboard_entries WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Return the newest archived records first.
@@ -943,38 +960,32 @@ impl ClipboardStore {
         entries.collect()
     }
 
-    /// Restore an archived record into the active feed with its original
-    /// content and timestamp. Returns the new active id, or None when the
-    /// archive id is missing.
+    /// Atomically restore an archived record into the active feed with a fresh
+    /// never-reused ID and its original content and timestamp. Returns the new
+    /// active id, or None when the archive id is missing.
     pub fn restore_deleted_entry(&self, id: i64) -> Result<Option<i64>> {
-        let archived = match self.get_deleted_entry(id)? {
-            Some(archived) => archived,
-            None => return Ok(None),
-        };
-
-        self.connection.execute(
-            "INSERT INTO clipboard_entries
-                (content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![
-                archived.content,
-                archived.copied_at,
-                archived.source_app.as_deref(),
-                archived.source_process.as_deref(),
-                archived.window_title.as_deref(),
-                archived.app_icon.as_deref(),
-                i32::from(archived.is_pinned),
-                archived.entry_type,
-                archived.image_data.as_deref(),
-                archived.image_dimensions.as_deref(),
-                archived.files_data.as_deref(),
-                archived.source_url.as_deref(),
-            ],
+        let tx = self.begin_immediate()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM deleted_entries WHERE id = ?1)",
+            params![id],
+            |row| row.get(0),
         )?;
-        let new_id = self.connection.last_insert_rowid();
+        if !exists {
+            tx.commit()?;
+            return Ok(None);
+        }
 
-        self.connection
-            .execute("DELETE FROM deleted_entries WHERE id = ?1", params![id])?;
+        let new_id = Self::allocate_next_entry_id(&tx)?;
+        tx.execute(
+            "INSERT INTO clipboard_entries
+                (id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url)
+             SELECT ?2, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url
+             FROM deleted_entries
+             WHERE id = ?1",
+            params![id, new_id],
+        )?;
+        tx.execute("DELETE FROM deleted_entries WHERE id = ?1", params![id])?;
+        tx.commit()?;
 
         Ok(Some(new_id))
     }
@@ -1193,7 +1204,9 @@ impl ClipboardStore {
         deleted: &[DeletedEntry],
         settings: &[(String, String)],
     ) -> Result<ImportCounts> {
-        let transaction = self.connection.transaction()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut counts = ImportCounts::default();
 
         for entry in entries {
@@ -1216,11 +1229,13 @@ impl ClipboardStore {
                     }
                 }
                 None => {
+                    let new_id = Self::allocate_next_entry_id(&transaction)?;
                     transaction.execute(
                         "INSERT INTO clipboard_entries
-                            (content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, ocr_text, ocr_boxes)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                            (id, content, copied_at, source_app, source_process, window_title, app_icon, is_pinned, entry_type, image_data, image_dimensions, files_data, source_url, ocr_text, ocr_boxes)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                         params![
+                            new_id,
                             entry.content,
                             entry.copied_at,
                             entry.source_app.as_deref(),
@@ -1499,30 +1514,29 @@ mod tests {
     }
 
     #[test]
-    fn deletes_a_single_entry_by_id() {
+    fn deletes_a_single_entry_by_id_without_resequencing() {
         let store = ClipboardStore::in_memory().expect("in-memory database should open");
-        let _id1 = store.add_text("first").unwrap(); // 1
-        let id2 = store.add_text("second").unwrap(); // 2
-        let _id3 = store.add_text("third").unwrap(); // 3
+        let id1 = store.add_text("first").unwrap();
+        let id2 = store.add_text("second").unwrap();
+        let id3 = store.add_text("third").unwrap();
 
         assert_eq!(store.recent_entries(10).unwrap().len(), 3);
 
-        // Delete id2 ("second") in the middle
+        // Delete id2 ("second") in the middle; remaining IDs stay immutable.
         let deleted = store.delete_entry(id2).unwrap();
         assert!(deleted);
 
         let entries = store.recent_entries(10).unwrap();
         assert_eq!(entries.len(), 2);
-        // "third" originally had id 3, now re-sequenced to id 2
         assert_eq!(entries[0].content, "third");
-        assert_eq!(entries[0].id, 2);
-        // "first" originally had id 1, remains id 1
+        assert_eq!(entries[0].id, id3);
         assert_eq!(entries[1].content, "first");
-        assert_eq!(entries[1].id, 1);
+        assert_eq!(entries[1].id, id1);
 
-        // Subsequent additions get next sequential id (3)
+        // Deleting the highest ID also never causes ID reuse.
+        assert!(store.delete_entry(id3).unwrap());
         let id_new = store.add_text("fourth").unwrap();
-        assert_eq!(id_new, 3);
+        assert!(id_new > id3);
     }
 
     #[test]
@@ -1694,20 +1708,20 @@ mod tests {
     }
 
     #[test]
-    fn soft_delete_moves_record_to_archive_and_resequences_active() {
+    fn soft_delete_moves_record_to_archive_with_immutable_ids() {
         let store = ClipboardStore::in_memory().expect("in-memory database should open");
-        store
+        let id1 = store
             .add_text("first")
             .expect("first text should be stored");
-        store
+        let id2 = store
             .add_text("second")
             .expect("second text should be stored");
-        store
+        let id3 = store
             .add_text("third")
             .expect("third text should be stored");
 
         assert!(store
-            .soft_delete_entry(2)
+            .soft_delete_entry(id2)
             .expect("soft delete should succeed"));
 
         let entries = store
@@ -1715,16 +1729,16 @@ mod tests {
             .expect("recent entries should be queryable");
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].content, "third");
-        assert_eq!(entries[0].id, 2);
+        assert_eq!(entries[0].id, id3);
         assert_eq!(entries[1].content, "first");
-        assert_eq!(entries[1].id, 1);
+        assert_eq!(entries[1].id, id1);
 
         let deleted = store
             .recent_deleted_entries(10)
             .expect("deleted entries should be queryable");
         assert_eq!(deleted.len(), 1);
         assert_eq!(deleted[0].content, "second");
-        assert_eq!(deleted[0].original_id, 2);
+        assert_eq!(deleted[0].original_id, id2);
     }
 
     #[test]
@@ -1789,17 +1803,17 @@ mod tests {
     #[test]
     fn hard_delete_removes_only_the_archived_record() {
         let store = ClipboardStore::in_memory().expect("in-memory database should open");
-        store
+        let id1 = store
             .add_text("first")
             .expect("first text should be stored");
-        store
+        let id2 = store
             .add_text("second")
             .expect("second text should be stored");
         assert!(store
-            .soft_delete_entry(1)
+            .soft_delete_entry(id1)
             .expect("soft delete should succeed"));
         assert!(store
-            .soft_delete_entry(1)
+            .soft_delete_entry(id2)
             .expect("soft delete should succeed"));
 
         let deleted = store.recent_deleted_entries(10).unwrap();
@@ -2256,5 +2270,35 @@ mod tests {
             .list_source_apps()
             .expect("distinct apps should query");
         assert_eq!(apps, vec!["Brave".to_string(), "Code".to_string()]);
+    }
+
+    #[test]
+    fn clear_and_restore_preserve_never_reused_ids() {
+        let store = ClipboardStore::in_memory().expect("in-memory database should open");
+        let id1 = store.add_text("alpha").unwrap();
+        let id2 = store.add_text("beta").unwrap();
+        let id3 = store.add_text("gamma").unwrap();
+
+        assert_eq!(store.clear_entries().unwrap(), 3);
+        assert!(store.recent_entries(10).unwrap().is_empty());
+
+        // New capture after clearing must never reuse IDs 1..=3.
+        let id4 = store.add_text("delta").unwrap();
+        assert!(id4 > id3, "expected id4 ({id4}) > id3 ({id3})");
+
+        // Restoring an archived entry allocates a fresh ID > id4.
+        let archived = store.recent_deleted_entries(10).unwrap();
+        assert_eq!(archived.len(), 3);
+        let restored_id = store
+            .restore_deleted_entry(archived[0].id)
+            .unwrap()
+            .expect("restore should succeed");
+        assert!(
+            restored_id > id4,
+            "expected restored_id ({restored_id}) > id4 ({id4})"
+        );
+        // Deleting id1/id2 again is a no-op since they are already gone.
+        assert!(!store.delete_entry(id1).unwrap());
+        assert!(!store.soft_delete_entry(id2).unwrap());
     }
 }
